@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 import torch
 import numpy as np
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 import torchaudio
 import argparse
+import base64
 
 parser = argparse.ArgumentParser(description="ASR server")
 parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu", help="Compute device")
@@ -32,6 +33,11 @@ print("Model loaded.")
 class TranscribeRequest(BaseModel):
     audio_bytes: str
     sample_rate: int
+
+
+class TranscribeCRequest(BaseModel):
+    audio: str
+    rate: int
 
 
 @app.post("/transcribe")
@@ -70,6 +76,43 @@ def transcribe(req: TranscribeRequest):
         return JSONResponse(content={"transcript": "[No speech detected]"})
     else:
         return JSONResponse(content={"transcript": transcript.strip()})
+
+
+@app.post("/transcribe_c")
+def transcribe_c(req: TranscribeCRequest):
+    audio_raw = base64.b64decode(req.audio)
+    audio_data = np.frombuffer(audio_raw, dtype=np.int16).astype(np.float32)
+
+    audio_tensor = torch.from_numpy(np.array(audio_data)).unsqueeze(0)
+
+    if audio_tensor.shape[-1] < 512:
+        return PlainTextResponse(content="[No speech detected]")
+
+    audio_tensor = audio_tensor / audio_tensor.abs().max()
+
+    if req.rate != MODEL_SAMPLE_RATE:
+        resampler = torchaudio.transforms.Resample(
+            orig_freq=req.rate, new_freq=MODEL_SAMPLE_RATE
+        )
+        audio_tensor = resampler(audio_tensor)
+
+    user_prompt = "<|audio|>transcribe the speech with proper punctuation and capitalization."
+    chat = [{"role": "user", "content": user_prompt}]
+    prompt = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+
+    inputs = processor(prompt, audio_tensor, sampling_rate=MODEL_SAMPLE_RATE, return_tensors="pt").to(device)
+    input_token_len = inputs["input_ids"].shape[-1]
+
+    with torch.no_grad():
+        output_ids = model.generate(**inputs, max_new_tokens=1024, do_sample=False, num_beams=1)
+
+    generated_ids = output_ids[:, input_token_len:]
+    transcript = tokenizer.batch_decode(generated_ids, add_special_tokens=False, skip_special_tokens=True)[0]
+
+    if not transcript.strip():
+        return PlainTextResponse(content="[No speech detected]")
+    else:
+        return PlainTextResponse(content=transcript.strip())
 
 
 if __name__ == "__main__":

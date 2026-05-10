@@ -9,7 +9,7 @@ import threading
 
 SERVER_URL = "http://127.0.0.1:8000/transcribe"
 HOTKEY = "ctrl+shift+k"
-HOTKEY2 = "ctrl+shift+a"
+HOTKEY2 = "ctrl+alt+k"
 
 recording_lock = threading.Lock()
 recording_active = False
