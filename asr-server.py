@@ -6,11 +6,16 @@ import torch
 import numpy as np
 from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 import torchaudio
+import argparse
+
+parser = argparse.ArgumentParser(description="ASR server")
+parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu", help="Compute device")
+args = parser.parse_args()
 
 app = FastAPI()
 
 model_id = "ibm-granite/granite-speech-4.1-2b"
-device = "cpu"  # Force CPU to preserve CUDA for other models
+device = args.device
 MODEL_SAMPLE_RATE = 16000
 
 print(f"Loading {model_id} on {device}...")
@@ -36,6 +41,10 @@ def transcribe(req: TranscribeRequest):
     )
 
     audio_tensor = torch.from_numpy(np.array(audio_data)).unsqueeze(0)
+
+    if audio_tensor.shape[-1] < 512:
+        return JSONResponse(content={"transcript": "[No speech detected]"})
+
     audio_tensor = audio_tensor / audio_tensor.abs().max()
 
     if req.sample_rate != MODEL_SAMPLE_RATE:
@@ -52,7 +61,7 @@ def transcribe(req: TranscribeRequest):
     input_token_len = inputs["input_ids"].shape[-1]
 
     with torch.no_grad():
-        output_ids = model.generate(**inputs, max_new_tokens=256, do_sample=False, num_beams=1)
+        output_ids = model.generate(**inputs, max_new_tokens=1024, do_sample=False, num_beams=1)
 
     generated_ids = output_ids[:, input_token_len:]
     transcript = tokenizer.batch_decode(generated_ids, add_special_tokens=False, skip_special_tokens=True)[0]

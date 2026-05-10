@@ -1,0 +1,11 @@
+keyboard
+pyautogui
+sounddevice
+numpy
+requests
+fastapi
+uvicorn
+torch
+torchaudio
+transformers
+pydantic
