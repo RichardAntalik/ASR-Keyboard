@@ -1,4 +1,6 @@
 #!/home/me/tools/asr-kb/asr-env/bin/python3
+from typing import Optional, Tuple
+import argparse
 import keyboard
 import pyautogui
 import sounddevice as sd
@@ -11,19 +13,23 @@ SERVER_URL = "http://127.0.0.1:8000/transcribe"
 HOTKEY = "ctrl+shift+k"
 HOTKEY2 = "ctrl+alt+k"
 
+parser = argparse.ArgumentParser(description="ASR client")
+parser.add_argument("--device", type=int, default=8, help="Audio input device number")
+args = parser.parse_args()
+
 recording_lock = threading.Lock()
 recording_active = False
 
 
-def record_while_key_held():
+def record_while_key_held() -> Optional[Tuple[bytes, int]]:
     start_time = time.time()
     
     try:
-        device_info = sd.query_devices(8)
+        device_info = sd.query_devices(args.device)
         native_rate = int(device_info['default_samplerate'])
     except Exception as e:
-        print(f"Error accessing audio device 8: {e}")
-        return None, None
+        print(f"Error accessing audio device {args.device}: {e}")
+        return None
 
     collected = []
 
@@ -32,7 +38,7 @@ def record_while_key_held():
             print(f"Status: {status}")
         collected.append(indata.copy())
 
-    stream = sd.InputStream(device=8, channels=1, samplerate=native_rate, callback=callback)
+    stream = sd.InputStream(device=args.device, channels=1, samplerate=native_rate, callback=callback)
     stream.start()
     print("Recording...")
 
@@ -54,7 +60,7 @@ def record_while_key_held():
     return audio_data.tobytes(), native_rate
 
 
-def transcribe_and_type(add_enter=False):
+def transcribe_and_type(add_enter: bool = False) -> None:
     audio_bytes, sample_rate = record_while_key_held()
     
     if not audio_bytes:
@@ -84,7 +90,7 @@ def transcribe_and_type(add_enter=False):
         print(f"Typed: {transcript}")
 
 
-def on_key_down(add_enter):
+def on_key_down(add_enter: bool) -> None:
     global recording_active
     with recording_lock:
         # Check if we are already recording to ignore OS key-repeat spam
@@ -94,7 +100,7 @@ def on_key_down(add_enter):
             threading.Thread(target=transcribe_and_type, args=(add_enter,), daemon=True).start()
 
 
-def on_key_up():
+def on_key_up() -> None:
     global recording_active
     with recording_lock:
         # Releasing the key breaks the while loop inside record_while_key_held()

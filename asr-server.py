@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from typing import Union
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
@@ -41,8 +42,8 @@ class TranscribeCRequest(BaseModel):
 
 
 @app.post("/transcribe")
-def transcribe(req: TranscribeRequest):
-    audio_data = np.frombuffer(
+def transcribe(req: TranscribeRequest) -> Union[JSONResponse, PlainTextResponse]:
+    audio_data: np.ndarray = np.frombuffer(
         bytes.fromhex(req.audio_bytes), dtype=np.float32
     )
 
@@ -79,9 +80,9 @@ def transcribe(req: TranscribeRequest):
 
 
 @app.post("/transcribe_c")
-def transcribe_c(req: TranscribeCRequest):
-    audio_raw = base64.b64decode(req.audio)
-    audio_data = np.frombuffer(audio_raw, dtype=np.int16).astype(np.float32)
+def transcribe_c(req: TranscribeCRequest) -> Union[JSONResponse, PlainTextResponse]:
+    audio_raw: bytes = base64.b64decode(req.audio)
+    audio_data: np.ndarray = np.frombuffer(audio_raw, dtype=np.int16).astype(np.float32)
 
     audio_tensor = torch.from_numpy(np.array(audio_data)).unsqueeze(0)
 
