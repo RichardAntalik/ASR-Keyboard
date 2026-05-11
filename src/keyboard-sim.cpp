@@ -24,9 +24,12 @@ void simulate_key(Display* dpy, const char* keysym_name, bool shift) {
     if (shift) XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Shift_L), False, 0);
 }
 
-void type_text(const char* text, const char* special_key) {
+void type_text(const char* text, const char* const* special_keys, int special_key_count) {
+    if (debug_enabled) printf("Debug: type_text text=%s, special_key_count=%d\n", text, special_key_count);
     Display* dpy = XOpenDisplay(NULL);
     if (!dpy) return;
+
+    if (debug_enabled) printf("Debug: type_text opened display\n");
 
     for (const char* p = text; *p; p++) {
         char c = *p;
@@ -62,18 +65,21 @@ void type_text(const char* text, const char* special_key) {
         }
     }
 
-    if (special_key && strcmp(special_key, "null") != 0 && strlen(special_key) > 0) {
-        if (strcmp(special_key, "enter") == 0 || strcmp(special_key, "Return") == 0) {
+    if (debug_enabled) printf("Debug: type_text special_keys count=%d\n", special_key_count);
+    for (int i = 0; i < special_key_count; i++) {
+        if (strcmp(special_keys[i], "enter") == 0 || strcmp(special_keys[i], "Return") == 0) {
             simulate_key(dpy, "Return", false);
-        } else if (strcmp(special_key, "space") == 0 || strcmp(special_key, " ") == 0) {
+        } else if (strcmp(special_keys[i], "space") == 0 || strcmp(special_keys[i], " ") == 0) {
             simulate_key(dpy, "space", false);
-        } else if (strcmp(special_key, "tab") == 0 || strcmp(special_key, "Tab") == 0) {
+        } else if (strcmp(special_keys[i], "tab") == 0 || strcmp(special_keys[i], "Tab") == 0) {
             simulate_key(dpy, "Tab", false);
         } else {
-            simulate_key(dpy, special_key, false);
+            simulate_key(dpy, special_keys[i], false);
         }
     }
 
+    if (debug_enabled) printf("Debug: type_text flushing\n");
     XFlush(dpy);
+    if (debug_enabled) printf("Debug: type_text closing display\n");
     XCloseDisplay(dpy);
 }

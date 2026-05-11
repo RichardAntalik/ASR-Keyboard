@@ -18,14 +18,14 @@
 #include "keyboard-sim.h"
 
 #define SERVER_URL "http://127.0.0.1:8000/transcribe"
-#define MAX_SOURCES 64
 
 std::atomic<bool> recording_active{false};
 bool debug_enabled{false};
-char config_path[MAX_PROMPT] = "";
+char* config_path = nullptr;
 
-config load_config() {
-    config cfg = { .entry_count = 0 };
+config* load_config() {
+    config* cfg = (config*)malloc(sizeof(config));
+    cfg->entry_count = 0;
 
     struct stat st;
     if (stat(config_path, &st) != 0) {
@@ -51,32 +51,61 @@ config load_config() {
     nlohmann::json json_data = nlohmann::json::parse(content);
     free(content);
 
-    cfg.entry_count = json_data.size();
-    for (int i = 0; i < cfg.entry_count; i++) {
+    cfg->entry_count = json_data.size();
+    cfg->entries = (shortcut_entry*)malloc(cfg->entry_count * sizeof(shortcut_entry));
+
+    for (int i = 0; i < cfg->entry_count; i++) {
         auto& entry = json_data[i];
-        cfg.entries[i].key_count = entry["shortcut"].size();
-        for (int j = 0; j < cfg.entries[i].key_count; j++) {
-            snprintf(cfg.entries[i].keys[j], 64, "%s", entry["shortcut"][j].get<std::string>().c_str());
+        cfg->entries[i].key_count = entry["shortcut"].size();
+        cfg->entries[i].keys = (char**)malloc(cfg->entries[i].key_count * sizeof(char*));
+        for (int j = 0; j < cfg->entries[i].key_count; j++) {
+            cfg->entries[i].keys[j] = strdup(entry["shortcut"][j].get<std::string>().c_str());
         }
-        snprintf(cfg.entries[i].prompt, MAX_PROMPT, "%s", entry["prompt"].get<std::string>().c_str());
-        if (entry.contains("special_key") && entry["special_key"] != "null") {
-            snprintf(cfg.entries[i].special_key, 64, "%s", entry["special_key"].get<std::string>().c_str());
+        cfg->entries[i].prompt = strdup(entry["prompt"].get<std::string>().c_str());
+        if (entry.contains("special_key")) {
+            if (entry["special_key"].is_array()) {
+                cfg->entries[i].special_key_count = entry["special_key"].size();
+                cfg->entries[i].special_keys = (char**)malloc(cfg->entries[i].special_key_count * sizeof(char*));
+                for (int j = 0; j < cfg->entries[i].special_key_count; j++) {
+                    cfg->entries[i].special_keys[j] = strdup(entry["special_key"][j].get<std::string>().c_str());
+                }
+            } else {
+                cfg->entries[i].special_key_count = 1;
+                cfg->entries[i].special_keys = (char**)malloc(sizeof(char*));
+                cfg->entries[i].special_keys[0] = strdup(entry["special_key"].get<std::string>().c_str());
+            }
         } else {
-            snprintf(cfg.entries[i].special_key, 64, "null");
+            cfg->entries[i].special_key_count = 0;
+            cfg->entries[i].special_keys = nullptr;
         }
     }
 
-    for (int i = 0; i < cfg.entry_count - 1; i++) {
-        for (int j = i + 1; j < cfg.entry_count; j++) {
-            if (cfg.entries[i].key_count < cfg.entries[j].key_count) {
-                shortcut_entry temp = cfg.entries[i];
-                cfg.entries[i] = cfg.entries[j];
-                cfg.entries[j] = temp;
+    for (int i = 0; i < cfg->entry_count - 1; i++) {
+        for (int j = i + 1; j < cfg->entry_count; j++) {
+            if (cfg->entries[i].key_count < cfg->entries[j].key_count) {
+                shortcut_entry temp = cfg->entries[i];
+                cfg->entries[i] = cfg->entries[j];
+                cfg->entries[j] = temp;
             }
         }
     }
-
     return cfg;
+}
+
+void free_config(config* cfg) {
+    for (int i = 0; i < cfg->entry_count; i++) {
+        for (int j = 0; j < cfg->entries[i].key_count; j++) {
+            free(cfg->entries[i].keys[j]);
+        }
+        free(cfg->entries[i].keys);
+        free(cfg->entries[i].prompt);
+        for (int j = 0; j < cfg->entries[i].special_key_count; j++) {
+            free(cfg->entries[i].special_keys[j]);
+        }
+        free(cfg->entries[i].special_keys);
+    }
+    free(cfg->entries);
+    free(cfg);
 }
 
 char* base64_encode(short* buffer, size_t size) {
@@ -104,7 +133,7 @@ size_t header_discard_cb(void* ptr, size_t size, size_t nmemb, void* data) {
     return size * nmemb;
 }
 
-void send_to_server(short* buffer, size_t size, const char* special_key, const char* prompt) {
+void send_to_server(short* buffer, size_t size, const char* const* special_keys, int special_key_count, const char* prompt) {
     if (size == 0) return;
     CURL *curl = curl_easy_init();
     if(curl) {
@@ -124,9 +153,9 @@ void send_to_server(short* buffer, size_t size, const char* special_key, const c
             try {
                 nlohmann::json json_resp = nlohmann::json::parse(resp);
                 std::string transcript = json_resp.value("transcript", "");
-                type_text(transcript.c_str(), special_key);
+                type_text(transcript.c_str(), (const char* const*)special_keys, special_key_count);
             } catch (...) {
-                type_text(resp, special_key);
+                type_text(resp, (const char* const*)special_keys, special_key_count);
             }
         }
         free(json); curl_slist_free_all(h); curl_easy_cleanup(curl);
@@ -147,7 +176,7 @@ int main(int argc, char* argv[]) {
             debug_enabled = true;
         }
         if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
-            snprintf(config_path, sizeof(config_path), "%s", argv[i+1]);
+            config_path = strdup(argv[i+1]);
             i++;
         }
         if (strcmp(argv[i], "-h") == 0) {
@@ -161,14 +190,22 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (config_path[0] == '\0') {
+    if (config_path == nullptr) {
         const char* home_dir = getenv("HOME");
         if (home_dir) {
-            snprintf(config_path, sizeof(config_path), "%s/.config/asr-kb/config.json", home_dir);
+            config_path = strdup(home_dir);
+            char* new_path = (char*)malloc(strlen(config_path) + 32);
+            snprintf(new_path, strlen(config_path) + 32, "%s/.config/asr-kb/config.json", config_path);
+            free(config_path);
+            config_path = new_path;
         } else {
             char cwd[256];
             getcwd(cwd, sizeof(cwd));
-            snprintf(config_path, sizeof(config_path), "%s/.config/asr-kb/config.json", cwd);
+            config_path = strdup(cwd);
+            char* new_path = (char*)malloc(strlen(config_path) + 32);
+            snprintf(new_path, strlen(config_path) + 32, "%s/.config/asr-kb/config.json", config_path);
+            free(config_path);
+            config_path = new_path;
         }
     }
 
@@ -187,19 +224,25 @@ int main(int argc, char* argv[]) {
     XISetMask(mask, XI_RawKeyRelease);
     XISelectEvents(dpy, DefaultRootWindow(dpy), &evmask, 1);
 
-    config cfg = load_config();
+    config* cfg = load_config();
 
     bool keycode_state[512] = {false};
-    char active_special_key[64] = "null";
+    char** active_special_keys = nullptr;
+    int active_special_key_count = 0;
     int active_entry = -1;
     pthread_t thread_id;
 
-    for (int i = 0; i < cfg.entry_count; i++) {
-        printf("Shortcut: %s", cfg.entries[i].keys[0]);
-        for (int j = 1; j < cfg.entries[i].key_count; j++) {
-            printf("+%s", cfg.entries[i].keys[j]);
+    for (int i = 0; i < cfg->entry_count; i++) {
+        printf("Shortcut: %s", cfg->entries[i].keys[0]);
+        for (int j = 1; j < cfg->entries[i].key_count; j++) {
+            printf("+%s", cfg->entries[i].keys[j]);
         }
-        printf(" -> prompt: %s, special: %s\n", cfg.entries[i].prompt, cfg.entries[i].special_key);
+        printf(" -> prompt: %s, special: ");
+        for (int j = 0; j < cfg->entries[i].special_key_count; j++) {
+            printf("%s", cfg->entries[i].special_keys[j]);
+            if (j + 1 < cfg->entries[i].special_key_count) printf("+");
+        }
+        printf("\n");
     }
 
     while (1) {
@@ -210,15 +253,13 @@ int main(int argc, char* argv[]) {
             int keycode = raw->detail;
 
             if (ev.xcookie.evtype == XI_RawKeyPress) {
-                if (debug_enabled) printf("Debug: XI_RawKeyPress keycode=%d\n", keycode);
-                
                 if (keycode < 512) keycode_state[keycode] = true;
 
                 if (!recording_active.load()) {
-                    for (int i = 0; i < cfg.entry_count; i++) {
+                    for (int i = 0; i < cfg->entry_count; i++) {
                         bool all_pressed = true;
-                        for (int j = 0; j < cfg.entries[i].key_count; j++) {
-                            KeySym target_keysym = config_key_to_keysym(cfg.entries[i].keys[j]);
+                        for (int j = 0; j < cfg->entries[i].key_count; j++) {
+                            KeySym target_keysym = config_key_to_keysym(cfg->entries[i].keys[j]);
                             KeyCode target_code = XKeysymToKeycode(dpy, target_keysym);
                             
                             if (target_code == 0 || target_code >= 512 || !keycode_state[target_code]) {
@@ -229,7 +270,13 @@ int main(int argc, char* argv[]) {
                         
                         if (all_pressed) {
                             recording_active.store(true);
-                            snprintf(active_special_key, sizeof(active_special_key), "%s", cfg.entries[i].special_key);
+                            active_special_key_count = cfg->entries[i].special_key_count;
+                            if (active_special_key_count > 0) {
+                                active_special_keys = (char**)malloc(active_special_key_count * sizeof(char*));
+                                for (int j = 0; j < active_special_key_count; j++) {
+                                    active_special_keys[j] = strdup(cfg->entries[i].special_keys[j]);
+                                }
+                            }
                             active_entry = i;
                             
                             if (debug_enabled) printf("Debug: all keys pressed! starting recording\n");
@@ -239,13 +286,12 @@ int main(int argc, char* argv[]) {
                     }
                 }
             } else if (ev.xcookie.evtype == XI_RawKeyRelease) {
-                if (debug_enabled) printf("Debug: XI_RawKeyRelease keycode=%d\n", keycode);
                 if (keycode < 512) keycode_state[keycode] = false;
 
                 if (recording_active.load() && active_entry != -1) {
                     bool active_released = false;
-                    for (int j = 0; j < cfg.entries[active_entry].key_count; j++) {
-                        KeySym target_keysym = config_key_to_keysym(cfg.entries[active_entry].keys[j]);
+                    for (int j = 0; j < cfg->entries[active_entry].key_count; j++) {
+                        KeySym target_keysym = config_key_to_keysym(cfg->entries[active_entry].keys[j]);
                         KeyCode target_code = XKeysymToKeycode(dpy, target_keysym);
                         if (target_code == keycode) {
                             active_released = true;
@@ -260,11 +306,11 @@ int main(int argc, char* argv[]) {
                         struct record_state* res = (struct record_state*)ret;
                         printf("Finished. Captured %zu samples.\n", res->total);
                         
-                        send_to_server(res->buffer, res->total, active_special_key, cfg.entries[active_entry].prompt);
+                         send_to_server(res->buffer, res->total, (const char* const*)active_special_keys, active_special_key_count, cfg->entries[active_entry].prompt);
                         
-                        free(res->buffer); 
-                        free(res);
-                        active_entry = -1;
+                         free(res->buffer); 
+                         free(res);
+                         active_entry = -1;
                     }
                 }
             }
