@@ -1,7 +1,6 @@
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
 #include <X11/extensions/XInput2.h>
-#include <X11/extensions/XTest.h>
 #include <pulse/pulseaudio.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,82 +13,16 @@
 #include <sys/stat.h>
 #include <atomic>
 
+#include "json.hpp"
+#include "pulse-recording.h"
+#include "keyboard-sim.h"
+
 #define SERVER_URL "http://127.0.0.1:8000/transcribe"
-#define MAX_AUDIO_SIZE (1024 * 8192)
-#define MAX_SOURCE_NAME 256
 #define MAX_SOURCES 64
-#define MAX_PROMPT 512
-#define MAX_SHORTCUT_KEYS 8
 
 std::atomic<bool> recording_active{false};
-char source_name[MAX_SOURCE_NAME] = "";
 bool debug_enabled{false};
 char config_path[MAX_PROMPT] = "";
-
-static KeySym config_key_to_keysym(const char* name) {
-    if (strcmp(name, "ctrl") == 0) { if (debug_enabled) printf("Debug: config_key_to_keysym(ctrl)=%ld\n", (long)XK_Control_L); return XK_Control_L; }
-    if (strcmp(name, "super") == 0) { if (debug_enabled) printf("Debug: config_key_to_keysym(super)=%ld\n", (long)XK_Super_L); return XK_Super_L; }
-    if (strcmp(name, "alt") == 0) { if (debug_enabled) printf("Debug: config_key_to_keysym(alt)=%ld\n", (long)XK_Alt_L); return XK_Alt_L; }
-    if (strcmp(name, "space") == 0) { if (debug_enabled) printf("Debug: config_key_to_keysym(space)=%ld\n", (long)XK_space); return XK_space; }
-    return XStringToKeysym(name);
-}
-
-#include "json.hpp"
-
-struct record_state {
-    short* buffer;
-    size_t total;
-};
-
-struct shortcut_entry {
-    char keys[MAX_SHORTCUT_KEYS][64];
-    int key_count;
-    char prompt[MAX_PROMPT];
-    char special_key[64];
-};
-
-struct config {
-    shortcut_entry entries[MAX_SOURCES];
-    int entry_count;
-};
-
-// --- PulseAudio Listing Logic ---
-
-typedef struct {
-    int target_index;
-    int current_count;
-    bool done;
-} list_context;
-
-void source_info_cb(pa_context *c, const pa_source_info *i, int eol, void *userdata) {
-    list_context *ctx = (list_context*)userdata;
-    if (eol) { ctx->done = true; return; }
-    
-    if (ctx->target_index == -1) {
-        printf("[%d] %s (%s)\n", ctx->current_count, i->description, i->name);
-    } else if (ctx->current_count == ctx->target_index) {
-        strncpy(source_name, i->name, MAX_SOURCE_NAME);
-    }
-    ctx->current_count++;
-}
-
-void run_pa_query(int index) {
-    pa_mainloop* ml = pa_mainloop_new();
-    pa_context* ctx = pa_context_new(pa_mainloop_get_api(ml), "pa-query");
-    list_context l_ctx = { .target_index = index, .current_count = 0, .done = false };
-    pa_context_connect(ctx, NULL, PA_CONTEXT_NOFLAGS, NULL);
-    while (!l_ctx.done) {
-        pa_mainloop_iterate(ml, 1, NULL);
-        pa_context_state_t state = pa_context_get_state(ctx);
-        if (state == PA_CONTEXT_READY) {
-            static bool req = false;
-            if (!req) { pa_context_get_source_info_list(ctx, source_info_cb, &l_ctx); req = true; }
-        } else if (state == PA_CONTEXT_FAILED || state == PA_CONTEXT_TERMINATED) break;
-    }
-    pa_context_unref(ctx); pa_mainloop_free(ml);
-}
-
-// --- Config Loading ---
 
 config load_config() {
     config cfg = { .entry_count = 0 };
@@ -133,7 +66,6 @@ config load_config() {
         }
     }
 
-    // Sort entries by key_count (descending) to prevent subset overlap
     for (int i = 0; i < cfg.entry_count - 1; i++) {
         for (int j = i + 1; j < cfg.entry_count; j++) {
             if (cfg.entries[i].key_count < cfg.entries[j].key_count) {
@@ -146,55 +78,6 @@ config load_config() {
 
     return cfg;
 }
-
-// --- PulseAudio Recording ---
-
-void record_request_callback(pa_stream *p, size_t nbytes, void *userdata) {
-    struct record_state *state = (struct record_state*)userdata;
-    const void *data;
-    if (pa_stream_peek(p, &data, &nbytes) < 0) return;
-    
-    if (data) {
-        size_t samples = nbytes / sizeof(short);
-        if (state->total + samples < MAX_AUDIO_SIZE) {
-            memcpy(state->buffer + state->total, data, nbytes);
-            state->total += samples;
-        }
-    }
-    pa_stream_drop(p);
-}
-
-void* record_thread(void* arg) {
-    pa_mainloop* ml = pa_mainloop_new();
-    pa_context* ctx = pa_context_new(pa_mainloop_get_api(ml), "asr-rec");
-    pa_context_connect(ctx, NULL, PA_CONTEXT_NOFLAGS, NULL);
-    while (pa_context_get_state(ctx) != PA_CONTEXT_READY) pa_mainloop_iterate(ml, 1, NULL);
-
-    struct record_state* state = (struct record_state*)malloc(sizeof(struct record_state));
-    state->buffer = (short*)malloc(MAX_AUDIO_SIZE * sizeof(short));
-    state->total = 0;
-
-    pa_sample_spec ss = {.format = PA_SAMPLE_S16LE, .rate = 16000, .channels = 1};
-    pa_stream* s = pa_stream_new(ctx, "capture", &ss, NULL);
-    pa_stream_set_read_callback(s, record_request_callback, state);
-    pa_stream_connect_record(s, source_name[0] ? source_name : NULL, NULL, PA_STREAM_ADJUST_LATENCY);
-
-    while (recording_active.load()) pa_mainloop_iterate(ml, 1, NULL);
-    
-    for(int i=0; i<15; i++) {
-        usleep(10000);
-        pa_mainloop_iterate(ml, 0, NULL);
-    }
-
-    pa_stream_disconnect(s);
-    pa_stream_unref(s);
-    pa_context_disconnect(ctx);
-    pa_context_unref(ctx);
-    pa_mainloop_free(ml);
-    return (void*)state;
-}
-
-// --- Base64 and Server Logic ---
 
 char* base64_encode(short* buffer, size_t size) {
     static char result[MAX_AUDIO_SIZE * 3];
@@ -219,72 +102,6 @@ size_t write_cb(void* ptr, size_t size, size_t nmemb, void* data) {
 
 size_t header_discard_cb(void* ptr, size_t size, size_t nmemb, void* data) {
     return size * nmemb;
-}
-
-// --- Keyboard Simulation Logic ---
-
-void simulate_key(Display* dpy, const char* keysym_name, bool shift) {
-    KeyCode code = XKeysymToKeycode(dpy, XStringToKeysym(keysym_name));
-    if (code == 0) return;
-
-    if (shift) XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Shift_L), True, 0);
-    XTestFakeKeyEvent(dpy, code, True, 0);
-    XTestFakeKeyEvent(dpy, code, False, 0);
-    if (shift) XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Shift_L), False, 0);
-}
-
-void type_text(const char* text, const char* special_key) {
-    Display* dpy = XOpenDisplay(NULL);
-    if (!dpy) return;
-
-    for (const char* p = text; *p; p++) {
-        char c = *p;
-        if (c >= 'a' && c <= 'z') {
-            char buf[2] = {c, 0};
-            simulate_key(dpy, buf, false);
-        } else if (c >= 'A' && c <= 'Z') {
-            char buf[2] = {c + 32, 0};
-            simulate_key(dpy, buf, true);
-        } else if (c >= '0' && c <= '9') {
-            char buf[2] = {c, 0};
-            simulate_key(dpy, buf, false);
-        } else {
-            switch (c) {
-                case ' ':  simulate_key(dpy, "space", false); break;
-                case '.':  simulate_key(dpy, "period", false); break;
-                case ',':  simulate_key(dpy, "comma", false); break;
-                case '?':  simulate_key(dpy, "slash", true); break;
-                case '!':  simulate_key(dpy, "1", true); break;
-                case '-':  simulate_key(dpy, "minus", false); break;
-                case '_':  simulate_key(dpy, "minus", true); break;
-                case '\'': simulate_key(dpy, "apostrophe", false); break;
-                case '"':  simulate_key(dpy, "apostrophe", true); break;
-                case ':':  simulate_key(dpy, "semicolon", true); break;
-                case ';':  simulate_key(dpy, "semicolon", false); break;
-                case '+':  simulate_key(dpy, "equal", true); break;
-                case '=':  simulate_key(dpy, "equal", false); break;
-                case '/':  simulate_key(dpy, "slash", false); break;
-                case '(':  simulate_key(dpy, "9", true); break;
-                case ')':  simulate_key(dpy, "0", true); break;
-                default:   break;
-            }
-        }
-    }
-
-    if (special_key && strcmp(special_key, "null") != 0 && strlen(special_key) > 0) {
-        if (strcmp(special_key, "enter") == 0 || strcmp(special_key, "Return") == 0) {
-            simulate_key(dpy, "Return", false);
-        } else if (strcmp(special_key, "space") == 0 || strcmp(special_key, " ") == 0) {
-            simulate_key(dpy, "space", false);
-        } else if (strcmp(special_key, "tab") == 0 || strcmp(special_key, "Tab") == 0) {
-            simulate_key(dpy, "Tab", false);
-        } else {
-            simulate_key(dpy, special_key, false);
-        }
-    }
-
-    XFlush(dpy);
-    XCloseDisplay(dpy);
 }
 
 void send_to_server(short* buffer, size_t size, const char* special_key, const char* prompt) {
@@ -315,8 +132,6 @@ void send_to_server(short* buffer, size_t size, const char* special_key, const c
         free(json); curl_slist_free_all(h); curl_easy_cleanup(curl);
     }
 }
-
-// --- Main ---
 
 int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {

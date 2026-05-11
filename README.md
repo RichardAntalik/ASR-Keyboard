@@ -1,12 +1,46 @@
 # asr-kb
 
-Real-time speech-to-text tool that records audio while holding a hotkey and transcribes it into typed text.
+Install dependencies, build with `cmake . && make`, then run `./asr-kb`. Start the server at `localhost:8000` beforehand.
 
-## Components
+Hold a configured hotkey combination to record audio from your microphone, release it to transcribe the speech, and the tool types the transcript directly into your active window.
 
-- **asr-kb.py** — Client: listens for `Ctrl+Shift+K`, records audio while held, sends to server, types the transcript
-- **asr-server.py** — Server: FastAPI endpoint that transcribes audio using `ibm-granite/granite-speech-4.1-2b`
-- **asr-kb.c** — C client alternative: uses X11/XInput2 for hotkeys, PulseAudio for recording, XTest for typing
+Two hotkeys are supported: one for plain typing, one for typing plus an Enter key.
+
+## Configuration
+
+Create `~/.config/asr-kb/config.json`:
+
+```json
+[
+  { "shortcut": ["ctrl", "super", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": "null" },
+  { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": "enter" }
+]
+```
+
+- `shortcut`: array of key names (ctrl, super, alt, space, etc.)
+- `prompt`: prompt sent to the server for transcription
+- `special_key`: optional key pressed after transcribing (enter, tab, null)
+
+Entries are sorted by key count (descending) to prevent subset overlap.
+
+## Example
+
+Voice input: "run the docker build command"
+Output (typed): `docker build`
+
+Voice input: "what is the current date"
+Output (typed): `What is the current date.` + Enter
+
+## Usage
+
+```bash
+sudo ./asr-kb                    # run with default config
+sudo ./asr-kb -l                 # list audio sources
+sudo ./asr-kb -i 3               # select audio source by index
+sudo ./asr-kb -d                 # enable debug output
+sudo ./asr-kb -c /path/config.json  # specify config file
+sudo ./asr-kb -h                 # show help
+```
 
 ## Architecture
 
@@ -14,83 +48,30 @@ Real-time speech-to-text tool that records audio while holding a hotkey and tran
 [Microphone] → [Client (hold hotkey)] → [HTTP POST] → [Server (Granite model)] → [Keyboard simulation]
 ```
 
-## Setup
+## Components
+
+- **src/main.cpp** — Argument parsing, config loading, XInput event loop, server communication
+- **src/pulse-recording.cpp** — PulseAudio source listing and audio recording
+- **src/keyboard-sim.cpp** — XTest keyboard simulation for typing the transcript
+
+## Build
 
 ```bash
-bash install.sh
+cmake . && make
+sudo make install
 ```
 
-This creates a Python virtual environment (`asr-env`) and installs all dependencies from `requirements.txt`.
-
-## Usage
-
-### Python client
-
-1. Start the server: `sudo ./asr-server.py`
-2. Start the client: `sudo ./asr-kb.py --device <number>` (default: 8)
-3. Hold `Ctrl+Shift+K` to record, release to transcribe
-4. Hold `Ctrl+Alt+K` to record, release to transcribe + Enter
-
-### C client
-
-1. Build: `sudo ./install.sh`
-2. Run: `sudo ./asr-kb`
-3. Hold configured shortcut to record, release to transcribe
-4. Config file: `~/.config/asr-kb/config.json` (see below)
-
-Compile the C client with: `cmake . && make && sudo make install`
+Binary `asr-kb` is placed in the project directory.
 
 ## Dependencies
 
-See `requirements.txt`.
-
-## Audio Device Selection
-
-To find your microphone device number:
-
-```python
-import sounddevice as sd
-sd.query_devices(kind='input')
-```
-
-Pass `--device <number>` when running `asr-kb.py` and `ASRClient.py`.
-
-## Config File
-
-Create `~/.config/asr-kb/config.json`:
-
-```json
-[
-  { "shortcut": ["ctrl", "super", "space"], "prompt": "default", "special_key": "null" },
-  { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "default", "special_key": "enter" }
-]
-```
-
-- `shortcut`: array of key names (ctrl, super, alt, space, etc.)
-- `prompt`: prompt to send to server (currently "default" only)
-- `special_key`: optional special key after transcribe (enter, null)
-
-Default config is used if file not found.
-
-## Hotkey Customization
-
-Edit `HOTKEY` and `HOTKEY2` variables in `asr-kb.py` to change the hotkeys.
-
-## Hardware Requirements
-
-- **CPU**: The model runs on CPU but is slow. Expect high latency.
-- **CUDA GPU**: Recommended. The model uses bfloat16 on CUDA for faster inference.
-- **RAM**: The model (~2B parameters) requires significant memory. Ensure your system has enough.
-
-## Model Download
-
-The first run downloads `ibm-granite/granite-speech-4.1-2b` from Hugging Face. This is a large download.
+X11, PulseAudio, libcurl, pthreads, nlohmann/json.
 
 ## Troubleshooting
 
-- **No audio**: Check that your microphone device number is correct.
+- **No audio**: Use `./asr-kb -l` to list sources, then `./asr-kb -i <index>` to select the correct microphone.
 - **Server not responding**: Ensure `asr-server.py` is running on localhost:8000.
-- **Typing not working**: Ensure `pyautogui` has permission to simulate keyboard input.
+- **Typing not working**: Run with sudo for keyboard input permissions.
 - **Slow transcription**: Use `--device cuda` on the server if you have a GPU.
 
 ## License
