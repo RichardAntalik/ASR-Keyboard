@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.10)
 project(ASR_Keyboard_Tool)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_compile_options(-Werror)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # 1. Find the required packages
@@ -28,6 +31,7 @@ target_link_libraries(asr-kb
     ${XTST_LIB} 
     ${PULSE_LIB} 
     pthread
+    asan
 )
 
 # 4. Create an "install" command

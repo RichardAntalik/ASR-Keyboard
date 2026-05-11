@@ -37,7 +37,7 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
             char buf[2] = {c, 0};
             simulate_key(dpy, buf, false);
         } else if (c >= 'A' && c <= 'Z') {
-            char buf[2] = {c + 32, 0};
+            char buf[2] = {(char)(c + 32), 0};
             simulate_key(dpy, buf, true);
         } else if (c >= '0' && c <= '9') {
             char buf[2] = {c, 0};

@@ -155,7 +155,7 @@ int main(int argc, char* argv[]) {
         for (int j = 1; j < cfg->entries[i].key_count; j++) {
             printf("+%s", cfg->entries[i].keys[j]);
         }
-        printf(" -> prompt: %s, special: ");
+        printf(" -> prompt: %s, special: ", cfg->entries[i].prompt);
         for (int j = 0; j < cfg->entries[i].special_key_count; j++) {
             printf("%s", cfg->entries[i].special_keys[j]);
             if (j + 1 < cfg->entries[i].special_key_count) printf("+");
