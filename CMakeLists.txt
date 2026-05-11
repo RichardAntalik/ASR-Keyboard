@@ -15,7 +15,7 @@ find_library(XTST_LIB Xtst REQUIRED)
 find_library(PULSE_LIB pulse REQUIRED)
 
 # 2. Define the executable
-add_executable(asr-kb src/main.cpp src/pulse-recording.cpp src/keyboard-sim.cpp)
+add_executable(asr-kb src/main.cpp src/pulse-recording.cpp src/keyboard-sim.cpp src/config-parsing.cpp)
 target_include_directories(asr-kb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # 3. Link everything together

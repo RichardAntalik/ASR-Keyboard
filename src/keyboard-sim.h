@@ -3,6 +3,8 @@
 
 #include <X11/Xlib.h>
 
+extern bool debug_enabled;
+
 struct shortcut_entry {
     char** keys;
     int key_count;
