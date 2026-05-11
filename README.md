@@ -33,10 +33,10 @@ This creates a Python virtual environment (`asr-env`) and installs all dependenc
 
 ### C client
 
-1. Start the server: `sudo ./asr-server.py --device cuda` (recommended for speed)
-2. Run the compiled binary: `sudo ./asr_kb`
-3. Hold `Ctrl+Super+Space` to record, release to transcribe
-4. Hold `Ctrl+Super+Alt+Space` to record, release to transcribe + Enter
+1. Build: `sudo ./install.sh`
+2. Run: `sudo ./asr-kb`
+3. Hold configured shortcut to record, release to transcribe
+4. Config file: `~/.config/asr-kb/config.json` (see below)
 
 Compile the C client with: `cmake . && make && sudo make install`
 
@@ -54,6 +54,23 @@ sd.query_devices(kind='input')
 ```
 
 Pass `--device <number>` when running `asr-kb.py` and `ASRClient.py`.
+
+## Config File
+
+Create `~/.config/asr-kb/config.json`:
+
+```json
+[
+  { "shortcut": ["ctrl", "super", "space"], "prompt": "default", "special_key": "null" },
+  { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "default", "special_key": "enter" }
+]
+```
+
+- `shortcut`: array of key names (ctrl, super, alt, space, etc.)
+- `prompt`: prompt to send to server (currently "default" only)
+- `special_key`: optional special key after transcribe (enter, null)
+
+Default config is used if file not found.
 
 ## Hotkey Customization
 

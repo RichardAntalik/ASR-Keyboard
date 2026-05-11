@@ -1,0 +1,4 @@
+[
+  { "shortcut": ["ctrl", "super", "space"], "prompt": "default", "special_key": "null" },
+  { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "default", "special_key": "enter" }
+]
