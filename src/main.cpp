@@ -16,7 +16,7 @@
 #include "config-parsing.h"
 #include "pulse-recording.h"
 #include "keyboard-sim.h"
-#include "server.h"
+#include "client.h"
 
 std::atomic<bool> recording_active{false};
 bool debug_enabled{false};
