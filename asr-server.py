@@ -21,13 +21,26 @@ device = args.device
 MODEL_SAMPLE_RATE = 16000
 
 print(f"Loading {model_id} on {device}...")
-processor = AutoProcessor.from_pretrained(model_id)
+try:
+    processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
+except (ValueError, OSError):
+    processor = AutoProcessor.from_pretrained(model_id)
+
 tokenizer = processor.tokenizer
-model = AutoModelForSpeechSeq2Seq.from_pretrained(
-    model_id,
-    dtype=torch.bfloat16 if device == "cuda" else torch.float32,
-    low_cpu_mem_usage=True
-).to(device)
+
+try:
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        model_id,
+        dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        low_cpu_mem_usage=True,
+        local_files_only=True
+    ).to(device)
+except (ValueError, OSError):
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        model_id,
+        dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        low_cpu_mem_usage=True
+    ).to(device)
 print("Model loaded.")
 
 
