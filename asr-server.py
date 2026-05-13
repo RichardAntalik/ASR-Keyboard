@@ -12,6 +12,7 @@ import base64
 
 parser = argparse.ArgumentParser(description="ASR server")
 parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu", help="Compute device")
+parser.add_argument("--debug", action="store_true", help="Enable debug timing")
 args = parser.parse_args()
 
 app = FastAPI()
@@ -47,6 +48,7 @@ print("Model loaded.")
 class TranscribeRequest(BaseModel):
     audio_bytes: str
     sample_rate: int
+    prompt: str
 
 
 class TranscribeCRequest(BaseModel):
@@ -56,6 +58,9 @@ class TranscribeCRequest(BaseModel):
 
 @app.post("/transcribe", response_model=None)
 def transcribe(req: TranscribeRequest) -> Union[JSONResponse, PlainTextResponse]:
+    import time
+    start_time = time.time()
+
     # Change fromhex to b64decode
     try:
         audio_raw = base64.b64decode(req.audio_bytes)
@@ -79,8 +84,7 @@ def transcribe(req: TranscribeRequest) -> Union[JSONResponse, PlainTextResponse]
         )
         audio_tensor = resampler(audio_tensor)
 
-    user_prompt = "<|audio|>transcribe the speech with proper punctuation and capitalization."
-    chat = [{"role": "user", "content": user_prompt}]
+    chat = [{"role": "user", "content": req.prompt}]
     prompt = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
 
     inputs = processor(prompt, audio_tensor, sampling_rate=MODEL_SAMPLE_RATE, return_tensors="pt").to(device)
@@ -92,10 +96,15 @@ def transcribe(req: TranscribeRequest) -> Union[JSONResponse, PlainTextResponse]
     generated_ids = output_ids[:, input_token_len:]
     transcript = tokenizer.batch_decode(generated_ids, add_special_tokens=False, skip_special_tokens=True)[0]
 
+    if args.debug:
+        duration = time.time() - start_time
+        print(f"Transcription took {duration:.4f} seconds")
+
     if not transcript.strip():
         return JSONResponse(content={"transcript": "[No speech detected]"})
     else:
         return JSONResponse(content={"transcript": transcript.strip()})
+
 
 if __name__ == "__main__":
     import uvicorn
