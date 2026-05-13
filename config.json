@@ -1,5 +1,4 @@
 [
-  { "shortcut": ["ctrl", "super", "c"], "prompt": "<|audio|>transcribe the speech so it is formatted as bash command.", "special_key": ["enter", "space"] },
-  { "shortcut": ["ctrl", "super", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": [] },
-  { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": ["enter"] }
+  { "shortcut": ["ctrl", "super", "space"], "prompt": "transcribe the speech with proper punctuation and capitalization.", "special_key": "null" },
+  { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "transcribe the speech with proper punctuation and capitalization.", "special_key": "enter" }
 ]
