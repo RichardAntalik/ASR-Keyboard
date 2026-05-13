@@ -3,9 +3,21 @@ project(ASR_Keyboard_Tool)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_compile_options(-Werror)
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
+
+option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
+if(ENABLE_ASAN)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
+endif()
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+add_custom_target(debug
+    COMMAND ${CMAKE_COMMAND} . -DENABLE_ASAN=ON
+    COMMAND ${CMAKE_COMMAND} --build .
+    COMMENT "Building with AddressSanitizer"
+)
+
 
 # 1. Find the required packages
 find_package(X11 REQUIRED)
