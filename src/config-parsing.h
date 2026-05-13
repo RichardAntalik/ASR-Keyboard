@@ -6,5 +6,6 @@
 
 config* load_config(const char* path);
 void free_config(config* cfg);
+bool create_default_config(const char* path);
 
 #endif

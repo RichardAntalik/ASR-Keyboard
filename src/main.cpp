@@ -86,6 +86,26 @@ int main(int argc, char* argv[]) {
 
     config* cfg = load_config(config_path);
 
+    if (cfg == nullptr) {
+        printf("Config file not found at %s\n", config_path);
+        printf("Would you like to create a default configuration file? (y/n): ");
+        char response = getchar();
+        if (response == 'y' || response == 'Y') {
+            if (create_default_config(config_path)) {
+                printf("Default configuration created successfully at %s\n", config_path);
+                cfg = load_config(config_path);
+            } else {
+                printf("Failed to create default configuration. Please create it manually at %s\n", config_path);
+                return 1;
+            }
+        } else {
+            printf("Exiting without configuration.\n");
+            return 1;
+        }
+    }
+
+    if (!cfg) return 1;
+
     bool keycode_state[512] = {false};
     char** active_special_keys = nullptr;
     int active_special_key_count = 0;
