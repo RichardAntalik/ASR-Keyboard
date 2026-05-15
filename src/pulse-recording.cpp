@@ -66,7 +66,15 @@ void* record_thread(void* arg) {
     pa_sample_spec ss = {.format = PA_SAMPLE_S16LE, .rate = 16000, .channels = 1};
     pa_stream* s = pa_stream_new(ctx, "capture", &ss, NULL);
     pa_stream_set_read_callback(s, record_request_callback, state);
-    pa_stream_connect_record(s, source_name[0] ? source_name : NULL, NULL, PA_STREAM_ADJUST_LATENCY);
+
+    pa_buffer_attr attr;
+    attr.maxlength = -1;
+    attr.tlength = 160;      // 10ms of audio at 16kHz (16000 * 1 * 2 bytes)
+    attr.prebuf = 0;
+    attr.minreq = 10;        // minimum request in bytes
+    attr.fragsize = 10;      // fragment size in bytes
+
+    pa_stream_connect_record(s, source_name[0] ? source_name : NULL, &attr, PA_STREAM_ADJUST_LATENCY);
 
     while (recording_active.load()) pa_mainloop_iterate(ml, 1, NULL);
     
