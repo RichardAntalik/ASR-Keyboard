@@ -55,7 +55,11 @@ config* load_config(const char* path) {
     fseek(fp, 0, SEEK_SET);
 
     char* content = (char*)malloc(file_size + 1);
-    fread(content, 1, file_size, fp);
+    if (fread(content, 1, file_size, fp) != file_size) {
+        free(content);
+        fclose(fp);
+        return nullptr;
+    }
     content[file_size] = '\0';
     fclose(fp);
 

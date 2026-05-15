@@ -50,8 +50,19 @@ Entries are sorted by key count (descending) to prevent subset overlap.
 ./asr-kb -i 3               # select audio source by index
 ./asr-kb -d                 # enable debug output
 ./asr-kb -c /path/config.json  # specify config file
+./asr-kb -a                 # remember active window for text injection
 ./asr-kb -h                 # show help
 ```
+
+## Canceling with Escape
+
+Press **Escape** at any point to cancel:
+
+- **During recording** — stops recording, discards captured audio
+- **While waiting for server** — aborts the HTTP request, discards the transcript
+- **While typing** — stops keyboard simulation mid-character
+
+Escape can be pressed at any time, even while the server is processing transcription.
 
 ## Architecture
 
@@ -59,11 +70,13 @@ Entries are sorted by key count (descending) to prevent subset overlap.
 [Microphone] → [Client (hold hotkey)] → [HTTP POST] → [Server (Granite model)] → [Keyboard simulation]
 ```
 
+The main thread runs the X11 event loop (always responsive to key events). Recording runs in a worker thread. After recording ends, the HTTP request runs in a separate thread so the event loop remains responsive — allowing Escape to cancel at any point.
+
 ## Components
 
-- **src/main.cpp** — Application entry, config prompts, and XInput event loop
+- **src/main.cpp** — Application entry, config prompts, XInput event loop, and thread coordination
 - **src/config-parsing.cpp** — Configuration loading, validation, and generation
-- **src/client.cpp** — Communication with the ASR server via HTTP
+- **src/client.cpp** — Communication with the ASR server via HTTP (with timeout)
 - **src/pulse-recording.cpp** — PulseAudio source listing and audio recording
 - **src/keyboard-sim.cpp** — XTest keyboard simulation for typing transcripts
 

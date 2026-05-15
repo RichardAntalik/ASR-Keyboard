@@ -48,7 +48,7 @@ void simulate_key(Display* dpy, const char* keysym_name, bool shift) {
     if (shift) XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Shift_L), False, 0);
 }
 
-void type_text(const char* text, const char* const* special_keys, int special_key_count, Window target_window) {
+void type_text(const char* text, const char* const* special_keys, int special_key_count, Window target_window, std::atomic<bool>& abort_requested) {
     if (debug_enabled) printf("Debug: type_text text=%s, special_key_count=%d, target=0x%lx\n", text, special_key_count, (unsigned long)target_window);
     Display* dpy = XOpenDisplay(NULL);
     if (!dpy) return;
@@ -78,6 +78,10 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
     }
 
     for (const char* p = text; *p; p++) {
+        if (abort_requested.load()) {
+            if (debug_enabled) printf("Debug: type_text aborted during character loop\n");
+            break;
+        }
         char c = *p;
         if (c >= 'a' && c <= 'z') {
             char buf[2] = {c, 0};
@@ -111,8 +115,14 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
         }
     }
 
+    if (abort_requested.load()) {
+         if (debug_enabled) printf("Debug: type_text aborted before special keys\n");
+         goto cleanup;
+    }
+
     if (debug_enabled) printf("Debug: type_text special_keys count=%d\n", special_key_count);
     for (int i = 0; i < special_key_count; i++) {
+        if (abort_requested.load()) break;
         if (strcmp(special_keys[i], "enter") == 0 || strcmp(special_keys[i], "Return") == 0) {
             simulate_key(dpy, "Return", false);
         } else if (strcmp(special_keys[i], "space") == 0 || strcmp(special_keys[i], " ") == 0) {
@@ -124,6 +134,7 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
         }
     }
 
+cleanup:
     if (debug_enabled) printf("Debug: type_text flushing\n");
     XFlush(dpy);
     struct timespec ts2 = {0, 10000000L};

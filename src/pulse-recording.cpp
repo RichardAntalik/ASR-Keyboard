@@ -2,6 +2,8 @@
 #include <cstdio>
 #include <cstring>
 
+extern std::atomic<bool> abort_requested;
+
 char source_name[MAX_SOURCE_NAME] = "";
 
 typedef struct {
@@ -76,7 +78,7 @@ void* record_thread(void* arg) {
 
     pa_stream_connect_record(s, source_name[0] ? source_name : NULL, &attr, PA_STREAM_ADJUST_LATENCY);
 
-    while (recording_active.load()) pa_mainloop_iterate(ml, 1, NULL);
+    while (recording_active.load() && !abort_requested.load()) pa_mainloop_iterate(ml, 1, NULL);
     
     for(int i=0; i<15; i++) {
         usleep(10000);

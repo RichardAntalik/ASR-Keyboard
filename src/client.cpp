@@ -30,7 +30,7 @@ size_t write_cb(void* ptr, size_t size, size_t nmemb, void* data) {
     return size * nmemb;
 }
 
-void send_to_server(short* buffer, size_t size, const char* const* special_keys, int special_key_count, const char* prompt, Window target_window) {
+void send_to_server(short* buffer, size_t size, const char* const* special_keys, int special_key_count, const char* prompt, Window target_window, std::atomic<bool>& abort_requested) {
     if (size == 0) return;
     CURL *curl = curl_easy_init();
     if(curl) {
@@ -45,13 +45,21 @@ void send_to_server(short* buffer, size_t size, const char* const* special_keys,
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, resp);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
         if(curl_easy_perform(curl) == CURLE_OK) {
+            if (abort_requested.load()) {
+                if (debug_enabled) printf("Debug: abort requested before typing\n");
+                free(json); curl_slist_free_all(h); curl_easy_cleanup(curl);
+                return;
+            }
             try {
                 nlohmann::json json_resp = nlohmann::json::parse(resp);
                 std::string transcript = json_resp.value("transcript", "");
-                type_text(transcript.c_str(), (const char* const*)special_keys, special_key_count, target_window);
+                if (!transcript.empty()) {
+                    type_text(transcript.c_str(), (const char* const*)special_keys, special_key_count, target_window, abort_requested);
+                }
             } catch (...) {
-                type_text(resp, (const char* const*)special_keys, special_key_count, target_window);
+                // Don't type anything if parsing fails to avoid typing error messages
             }
         }
         free(json); curl_slist_free_all(h); curl_easy_cleanup(curl);
