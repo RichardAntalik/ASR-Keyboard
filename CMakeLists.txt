@@ -43,8 +43,10 @@ target_link_libraries(asr-kb
     ${XTST_LIB} 
     ${PULSE_LIB} 
     pthread
-    asan
 )
+if(ENABLE_ASAN)
+    target_link_libraries(asr-kb asan)
+endif()
 
 # 4. Create an "install" command
 install(TARGETS asr-kb DESTINATION /usr/local/bin)

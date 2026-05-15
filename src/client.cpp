@@ -30,7 +30,7 @@ size_t write_cb(void* ptr, size_t size, size_t nmemb, void* data) {
     return size * nmemb;
 }
 
-void send_to_server(short* buffer, size_t size, const char* const* special_keys, int special_key_count, const char* prompt) {
+void send_to_server(short* buffer, size_t size, const char* const* special_keys, int special_key_count, const char* prompt, Window target_window) {
     if (size == 0) return;
     CURL *curl = curl_easy_init();
     if(curl) {
@@ -49,9 +49,9 @@ void send_to_server(short* buffer, size_t size, const char* const* special_keys,
             try {
                 nlohmann::json json_resp = nlohmann::json::parse(resp);
                 std::string transcript = json_resp.value("transcript", "");
-                type_text(transcript.c_str(), (const char* const*)special_keys, special_key_count);
+                type_text(transcript.c_str(), (const char* const*)special_keys, special_key_count, target_window);
             } catch (...) {
-                type_text(resp, (const char* const*)special_keys, special_key_count);
+                type_text(resp, (const char* const*)special_keys, special_key_count, target_window);
             }
         }
         free(json); curl_slist_free_all(h); curl_easy_cleanup(curl);

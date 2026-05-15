@@ -110,6 +110,7 @@ int main(int argc, char* argv[]) {
     char** active_special_keys = nullptr;
     int active_special_key_count = 0;
     int active_entry = -1;
+    Window target_window = None;
     pthread_t thread_id;
 
     for (int i = 0; i < cfg->entry_count; i++) {
@@ -158,8 +159,9 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                             active_entry = i;
+                            target_window = get_active_window(dpy);
                             
-                            if (debug_enabled) printf("Debug: all keys pressed! starting recording\n");
+                            if (debug_enabled) printf("Debug: all keys pressed! starting recording, target=0x%lx\n", (unsigned long)target_window);
                             pthread_create(&thread_id, NULL, record_thread, NULL);
                             break; 
                         }
@@ -186,11 +188,12 @@ int main(int argc, char* argv[]) {
                         struct record_state* res = (struct record_state*)ret;
                         printf("Finished. Captured %zu samples.\n", res->total);
                         
-                         send_to_server(res->buffer, res->total, (const char* const*)active_special_keys, active_special_key_count, cfg->entries[active_entry].prompt);
-                        
-                         free(res->buffer); 
-                         free(res);
-                         active_entry = -1;
+                         send_to_server(res->buffer, res->total, (const char* const*)active_special_keys, active_special_key_count, cfg->entries[active_entry].prompt, target_window);
+                         
+                          free(res->buffer); 
+                          free(res);
+                          active_entry = -1;
+                          target_window = None;
                     }
                 }
             }

@@ -20,6 +20,7 @@ struct config {
 
 KeySym config_key_to_keysym(const char* name);
 void simulate_key(Display* dpy, const char* keysym_name, bool shift);
-void type_text(const char* text, const char* const* special_keys, int special_key_count);
+Window get_active_window(Display* dpy);
+void type_text(const char* text, const char* const* special_keys, int special_key_count, Window target_window);
 
 #endif
