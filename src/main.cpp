@@ -17,29 +17,43 @@
 #include "pulse-recording.h"
 #include "keyboard-sim.h"
 #include "client.h"
+#include "queue.h"
+#include "request-storage.h"
 
 std::atomic<bool> recording_active{false};
 std::atomic<bool> abort_requested{false};
-std::atomic<bool> waiting_for_server{false};
+std::atomic<int> held_key_count{0};
 bool debug_enabled{false};
 char* config_path = nullptr;
 
-struct server_args {
-    short* buffer;
-    size_t size;
-    char** special_keys;
-    int special_key_count;
-    const char* prompt;
-    Window target_window;
-    std::atomic<bool>* abort;
-};
+thread_safe_queue transcription_queue;
 
-void* server_thread_func(void* arg) {
-    struct server_args* a = (struct server_args*)arg;
-    send_to_server(a->buffer, a->size, (const char* const*)a->special_keys, a->special_key_count, a->prompt, a->target_window, *a->abort);
-    free(a->buffer);
-    free(a->special_keys);
-    free(a);
+void* worker_thread_func(void* arg) {
+    while (true) {
+        queue_item item = transcription_queue.pop();
+        if (item.buffer == nullptr) break;
+
+        if (g_request_storage.is_cancelled(item.request_id)) {
+            if (debug_enabled) printf("Debug: worker request %d cancelled, skipping\n", item.request_id);
+            free(item.buffer);
+            for (int k = 0; k < item.special_key_count; k++) {
+                free(item.special_keys[k]);
+            }
+            free(item.special_keys);
+            g_request_storage.remove(item.request_id);
+            continue;
+        }
+
+        if (debug_enabled) printf("Debug: worker processing request %d, %zu samples\n", item.request_id, item.size);
+        send_to_server(item.buffer, item.size, (const char* const*)item.special_keys, item.special_key_count, item.prompt, item.target_window, abort_requested, item.request_id);
+
+        free(item.buffer);
+        for (int k = 0; k < item.special_key_count; k++) {
+            free(item.special_keys[k]);
+        }
+        free(item.special_keys);
+        g_request_storage.remove(item.request_id);
+    }
     return nullptr;
 }
 
@@ -138,7 +152,8 @@ int main(int argc, char* argv[]) {
     int active_entry = -1;
     Window target_window = None;
     pthread_t thread_id;
-    pthread_t server_thread = 0;
+    pthread_t worker_thread;
+    pthread_create(&worker_thread, NULL, worker_thread_func, NULL);
 
     for (int i = 0; i < cfg->entry_count; i++) {
         printf("Shortcut: %s", cfg->entries[i].keys[0]);
@@ -162,8 +177,9 @@ int main(int argc, char* argv[]) {
 
             if (ev.xcookie.evtype == XI_RawKeyPress) {
                 if (keycode < 512) keycode_state[keycode] = true;
+                held_key_count.fetch_add(1, std::memory_order_relaxed);
 
-                if (!recording_active.load() && !waiting_for_server.load()) {
+                if (!recording_active.load()) {
                     for (int i = 0; i < cfg->entry_count; i++) {
                         bool all_pressed = true;
                         for (int j = 0; j < cfg->entries[i].key_count; j++) {
@@ -178,7 +194,6 @@ int main(int argc, char* argv[]) {
                         
                         if (all_pressed) {
                             recording_active.store(true);
-                            abort_requested.store(false);
                             active_special_key_count = cfg->entries[i].special_key_count;
                             if (active_special_key_count > 0) {
                                 active_special_keys = (char**)malloc(active_special_key_count * sizeof(char*));
@@ -198,21 +213,20 @@ int main(int argc, char* argv[]) {
                             break; 
                         }
                     }
-                } else if (keycode == XKeysymToKeycode(dpy, XK_Escape)) {
-                     if (debug_enabled) printf("Debug: ESC pressed! aborting.\n");
-                      if (recording_active.load()) {
-                          recording_active.store(false);
-                          abort_requested.store(true);
-                      } else if (waiting_for_server.load()) {
-                          abort_requested.store(true);
-                          if (server_thread != 0) {
-                              pthread_join(server_thread, nullptr);
-                              waiting_for_server.store(false);
-                          }
-                      }
+                }
+
+                if (keycode == XKeysymToKeycode(dpy, XK_Escape)) {
+                    if (debug_enabled) printf("Debug: ESC key detected (keycode=%d), recording_active=%d, pending_requests=%zu\n", keycode, recording_active.load(), g_request_storage.pending_count()); fflush(stdout);
+                    if (recording_active.load()) {
+                        if (debug_enabled) printf("Debug: ESC setting recording_active=false\n");
+                        recording_active.store(false);
+                    }
+                    g_request_storage.cancel_all();
+                    if (debug_enabled) printf("Debug: ESC cancel_all() done\n"); fflush(stdout);
                 }
             } else if (ev.xcookie.evtype == XI_RawKeyRelease) {
                 if (keycode < 512) keycode_state[keycode] = false;
+                held_key_count.fetch_sub(1, std::memory_order_relaxed);
 
                 if (recording_active.load() && active_entry != -1) {
                     bool active_released = false;
@@ -232,19 +246,19 @@ int main(int argc, char* argv[]) {
                         struct record_state* res = (struct record_state*)ret;
                         printf("Finished. Captured %zu samples.\n", res->total);
                         
-                        short* server_buffer = res->buffer;
-                        size_t server_size = res->total;
-                        char** server_special_keys = (char**)malloc(active_special_key_count * sizeof(char*));
+                        queue_item item;
+                        item.buffer = res->buffer;
+                        item.size = res->total;
+                        item.special_key_count = active_special_key_count;
+                        item.special_keys = (char**)malloc(active_special_key_count * sizeof(char*));
                         for(int k=0; k<active_special_key_count; k++) {
-                            server_special_keys[k] = strdup(active_special_keys[k]);
+                            item.special_keys[k] = strdup(active_special_keys[k]);
                         }
-                        const char* server_prompt = cfg->entries[active_entry].prompt;
-                        Window server_target_window = target_window;
-                        std::atomic<bool>* server_abort = &abort_requested;
+                        item.prompt = cfg->entries[active_entry].prompt;
+                        item.target_window = target_window;
+                        item.request_id = g_request_storage.add_request();
                         
-                        pthread_create(&server_thread, NULL, server_thread_func, new server_args{server_buffer, server_size, server_special_keys, active_special_key_count, server_prompt, server_target_window, server_abort});
-                        
-                        waiting_for_server.store(true);
+                        transcription_queue.push(item);
                         
                         free(res);
                     }
@@ -252,15 +266,11 @@ int main(int argc, char* argv[]) {
             }
             XFreeEventData(dpy, &ev.xcookie);
         }
-
-        if (waiting_for_server.load()) {
-            if (pthread_tryjoin_np(server_thread, nullptr) == 0) {
-                waiting_for_server.store(false);
-                active_entry = -1;
-                target_window = None;
-            }
-        }
     }
+
+    abort_requested.store(true);
+    transcription_queue.push(queue_item{nullptr, 0, nullptr, 0, nullptr, None, 0});
+    pthread_join(worker_thread, nullptr);
 
     XCloseDisplay(dpy);
     return 0;

@@ -7,6 +7,8 @@
 #include <time.h>
 
 extern bool debug_enabled;
+extern std::atomic<int> held_key_count;
+#include "request-storage.h"
 
 Window get_active_window(Display* dpy) {
     Atom net_active = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
@@ -31,10 +33,10 @@ Window get_active_window(Display* dpy) {
 }
 
 KeySym config_key_to_keysym(const char* name) {
-    if (strcmp(name, "ctrl") == 0) { if (debug_enabled) printf("Debug: config_key_to_keysym(ctrl)=%ld\n", (long)XK_Control_L); return XK_Control_L; }
-    if (strcmp(name, "super") == 0) { if (debug_enabled) printf("Debug: config_key_to_keysym(super)=%ld\n", (long)XK_Super_L); return XK_Super_L; }
-    if (strcmp(name, "alt") == 0) { if (debug_enabled) printf("Debug: config_key_to_keysym(alt)=%ld\n", (long)XK_Alt_L); return XK_Alt_L; }
-    if (strcmp(name, "space") == 0) { if (debug_enabled) printf("Debug: config_key_to_keysym(space)=%ld\n", (long)XK_space); return XK_space; }
+    if (strcmp(name, "ctrl") == 0) return XK_Control_L;
+    if (strcmp(name, "super") == 0) return XK_Super_L;
+    if (strcmp(name, "alt") == 0) return XK_Alt_L;
+    if (strcmp(name, "space") == 0) return XK_space;
     return XStringToKeysym(name);
 }
 
@@ -48,10 +50,16 @@ void simulate_key(Display* dpy, const char* keysym_name, bool shift) {
     if (shift) XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Shift_L), False, 0);
 }
 
-void type_text(const char* text, const char* const* special_keys, int special_key_count, Window target_window, std::atomic<bool>& abort_requested) {
-    if (debug_enabled) printf("Debug: type_text text=%s, special_key_count=%d, target=0x%lx\n", text, special_key_count, (unsigned long)target_window);
+void type_text(const char* text, const char* const* special_keys, int special_key_count, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
+    if (debug_enabled) printf("Debug: type_text text='%s', special_key_count=%d, target=0x%lx, request_id=%d\n", text, special_key_count, (unsigned long)target_window, request_id); fflush(stdout);
+
+    while (held_key_count.load(std::memory_order_relaxed) > 0) {
+        struct timespec ts = {0, 10000000L};
+        nanosleep(&ts, NULL);
+    }
+
     Display* dpy = XOpenDisplay(NULL);
-    if (!dpy) return;
+    if (!dpy) { if (debug_enabled) printf("Debug: type_text failed to open display\n"); fflush(stdout); return; }
 
     if (debug_enabled) printf("Debug: type_text opened display\n");
 
@@ -80,6 +88,10 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
     for (const char* p = text; *p; p++) {
         if (abort_requested.load()) {
             if (debug_enabled) printf("Debug: type_text aborted during character loop\n");
+            break;
+        }
+        if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
+            if (debug_enabled) printf("Debug: type_text request %d cancelled\n", request_id);
             break;
         }
         char c = *p;
@@ -120,9 +132,15 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
          goto cleanup;
     }
 
+    if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
+        if (debug_enabled) printf("Debug: type_text request %d cancelled before special keys\n", request_id);
+        goto cleanup;
+    }
+
     if (debug_enabled) printf("Debug: type_text special_keys count=%d\n", special_key_count);
     for (int i = 0; i < special_key_count; i++) {
         if (abort_requested.load()) break;
+        if (request_id > 0 && g_request_storage.is_cancelled(request_id)) break;
         if (strcmp(special_keys[i], "enter") == 0 || strcmp(special_keys[i], "Return") == 0) {
             simulate_key(dpy, "Return", false);
         } else if (strcmp(special_keys[i], "space") == 0 || strcmp(special_keys[i], " ") == 0) {

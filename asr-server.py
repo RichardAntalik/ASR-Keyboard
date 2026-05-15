@@ -49,6 +49,8 @@ class TranscribeRequest(BaseModel):
     audio_bytes: str
     sample_rate: int
     prompt: str
+    request_id: int = 0
+    target_window: int = 0
 
 
 class TranscribeCRequest(BaseModel):
@@ -74,7 +76,7 @@ def transcribe(req: TranscribeRequest) -> Union[JSONResponse, PlainTextResponse]
     audio_tensor = torch.from_numpy(np.array(audio_data)).unsqueeze(0)
 
     if audio_tensor.shape[-1] < 512:
-        return JSONResponse(content={"transcript": "[No speech detected]"})
+        return JSONResponse(content={"transcript": "[No speech detected]", "request_id": req.request_id, "target_window": req.target_window})
 
     audio_tensor = audio_tensor / audio_tensor.abs().max()
 
@@ -101,9 +103,9 @@ def transcribe(req: TranscribeRequest) -> Union[JSONResponse, PlainTextResponse]
         print(f"Transcription took {duration:.4f} seconds")
 
     if not transcript.strip():
-        return JSONResponse(content={"transcript": "[No speech detected]"})
+        return JSONResponse(content={"transcript": "[No speech detected]", "request_id": req.request_id, "target_window": req.target_window})
     else:
-        return JSONResponse(content={"transcript": transcript.strip()})
+        return JSONResponse(content={"transcript": transcript.strip(), "request_id": req.request_id, "target_window": req.target_window})
 
 
 if __name__ == "__main__":

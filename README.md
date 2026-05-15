@@ -59,10 +59,10 @@ Entries are sorted by key count (descending) to prevent subset overlap.
 Press **Escape** at any point to cancel:
 
 - **During recording** — stops recording, discards captured audio
-- **While waiting for server** — aborts the HTTP request, discards the transcript
+- **While waiting for server** — server response is received but transcript is not typed
 - **While typing** — stops keyboard simulation mid-character
 
-Escape can be pressed at any time, even while the server is processing transcription.
+Escape can be pressed at any time, even while the server is processing transcription. Each transcription request is assigned a unique ID; Escape marks all pending requests as cancelled. The client waits for all held keys to be released before starting to type, preventing shortcut key interference.
 
 ## Architecture
 
@@ -72,6 +72,8 @@ Escape can be pressed at any time, even while the server is processing transcrip
 
 The main thread runs the X11 event loop (always responsive to key events). Recording runs in a worker thread. After recording ends, the HTTP request runs in a separate thread so the event loop remains responsive — allowing Escape to cancel at any point.
 
+Each transcription request is assigned a unique `request_id` (sent to the server and echoed back). Escape marks all pending requests as cancelled. The client checks the cancellation flag before processing the response and before typing — enabling per-character cancellation during keyboard simulation. Typing waits for all held keys to be released before starting.
+
 ## Components
 
 - **src/main.cpp** — Application entry, config prompts, XInput event loop, and thread coordination
@@ -79,6 +81,8 @@ The main thread runs the X11 event loop (always responsive to key events). Recor
 - **src/client.cpp** — Communication with the ASR server via HTTP (with timeout)
 - **src/pulse-recording.cpp** — PulseAudio source listing and audio recording
 - **src/keyboard-sim.cpp** — XTest keyboard simulation for typing transcripts
+- **src/queue.h / src/queue.cpp** — Thread-safe queue for passing recordings to the worker
+- **src/request-storage.h / src/request-storage.cpp** — Per-request cancellation tracking with unique IDs
 
 ## Build
 
