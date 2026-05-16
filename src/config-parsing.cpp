@@ -1,9 +1,7 @@
 #include "config-parsing.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/stat.h>
-#include <errno.h>
 #include <algorithm>
 
 bool create_default_config(const char* path) {
