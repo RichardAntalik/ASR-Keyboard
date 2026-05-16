@@ -27,14 +27,14 @@ The program will prompt you to generate a default configuration if the config fi
 ### Default Configuration
 ```json
 [
-  { "shortcut": ["ctrl", "super", "space"], "prompt": "transcribe the speech with proper punctuation and capitalization.", "special_key": "null" },
-  { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "transcribe the speech with proper punctuation and capitalization.", "special_key": "enter" }
+  { "shortcut": ["ctrl", "super", "space"], "prompt": "transcribe the speech with proper punctuation and capitalization.", "special_keys": [] },
+  { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "transcribe the speech with proper punctuation and capitalization.", "special_keys": ["enter"] }
 ]
 ```
 
 - `shortcut`: array of key names (ctrl, super, alt, space, etc.)
 - `prompt`: prompt sent to the server for transcription
-- `special_key`: optional key pressed after transcribing (enter, tab, null)
+- `special_keys`: optional array of keys pressed after transcribing (enter, tab, space, etc.)
 
 Entries are sorted by key count (descending) to prevent subset overlap.
 
