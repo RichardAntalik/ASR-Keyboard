@@ -107,19 +107,23 @@ int main(int argc, char* argv[]) {
     }
 
     if (config_path == nullptr) {
+        const char* xdg_config = getenv("XDG_CONFIG_HOME");
         const char* home_dir = getenv("HOME");
-        if (home_dir) {
-            config_path = strdup(home_dir);
-            char* new_path = (char*)malloc(strlen(config_path) + 32);
-            snprintf(new_path, strlen(config_path) + 32, "%s/.config/asr-kb/config.json", config_path);
-            free(config_path);
+
+        if (xdg_config) {
+            char* new_path = (char*)malloc(strlen(xdg_config) + 20);
+            snprintf(new_path, strlen(xdg_config) + 20, "%s/asr-kb/config.json", xdg_config);
+            config_path = new_path;
+        } else if (home_dir) {
+            char* new_path = (char*)malloc(strlen(home_dir) + 20);
+            snprintf(new_path, strlen(home_dir) + 20, "%s/.config/asr-kb/config.json", home_dir);
             config_path = new_path;
         } else {
             char cwd[256];
             if (!getcwd(cwd, sizeof(cwd))) return 1;
             config_path = strdup(cwd);
-            char* new_path = (char*)malloc(strlen(config_path) + 32);
-            snprintf(new_path, strlen(config_path) + 32, "%s/.config/asr-kb/config.json", config_path);
+            char* new_path = (char*)malloc(strlen(config_path) + 20);
+            snprintf(new_path, strlen(config_path) + 20, "%s/.config/asr-kb/config.json", config_path);
             free(config_path);
             config_path = new_path;
         }

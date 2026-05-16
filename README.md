@@ -22,7 +22,7 @@ cmake . && make
 
 ## Configuration
 
-The program will prompt you to generate a default configuration if `~/.config/asr-kb/config.json` is missing or invalid.
+The program will prompt you to generate a default configuration if the config file is missing or invalid. By default it looks for `~/.config/asr-kb/config.json` (or `$XDG_CONFIG_HOME/asr-kb/config.json` if `$XDG_CONFIG_HOME` is set).
 
 ### Default Configuration
 ```json
@@ -98,6 +98,23 @@ make debug
 ```
 
 Binary `asr-kb` is placed in the project directory.
+
+### Installation
+
+To install the binary system-wide:
+```bash
+make install
+```
+
+To uninstall:
+```bash
+make uninstall
+```
+
+The default install location is `/usr/local/bin`. Override with:
+```bash
+cmake . -DINSTALL_BIN_DIR=/opt/bin && make install
+```
 
 ## Dependencies
 

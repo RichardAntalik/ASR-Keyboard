@@ -51,5 +51,12 @@ if(ENABLE_ASAN)
     target_link_libraries(asr-kb asan)
 endif()
 
-# 4. Create an "install" command
-install(TARGETS asr-kb DESTINATION /usr/local/bin)
+# 4. Install/uninstall targets
+set(INSTALL_BIN_DIR "/usr/local/bin" CACHE PATH "Installation directory for binaries")
+
+install(TARGETS asr-kb DESTINATION ${INSTALL_BIN_DIR})
+
+add_custom_target(uninstall
+    COMMAND ${CMAKE_COMMAND} -E remove ${INSTALL_BIN_DIR}/asr-kb
+    COMMENT "Removing asr-kb from ${INSTALL_BIN_DIR}"
+)
