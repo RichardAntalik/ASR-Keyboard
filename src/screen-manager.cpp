@@ -160,12 +160,13 @@ void screen_draw_vu_meter(float volume) {
     snprintf(buf, sizeof(buf), "  Mic: [");
 
     for (int i = 0; i < bar_width; i++) {
+        int len = strlen(buf);
         if (i < filled) {
-            buf[strlen(buf)] = VU_CHARS[3];
+            buf[len] = VU_CHARS[3];
         } else {
-            buf[strlen(buf)] = VU_CHARS[0];
+            buf[len] = VU_CHARS[0];
         }
-        buf[strlen(buf) + 1] = '\0';
+        buf[len + 1] = '\0';
     }
 
     buf[strlen(buf)] = ']';
