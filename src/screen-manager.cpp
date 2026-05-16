@@ -2,28 +2,32 @@
 #include <curses.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <string>
+#include <array>
 #include <cstring>
-#include <signal.h>
 #include <pulse/pulseaudio.h>
+#include <algorithm>
 
-#define VU_PREFIX "["
-#define VU_SUFFIX "]"
-#define VU_CHARS ".:=#"
-#define SHORTCUT_LINES 5
-#define SEP_CHAR '_'
-#define OUTPUT_LINES 8
+std::mutex screen_mutex;
+
+inline constexpr char const* VU_PREFIX = "[";
+inline constexpr char const* VU_SUFFIX = "]";
+inline constexpr char const* VU_CHARS = ".:=#";
+inline constexpr int SHORTCUT_LINES = 5;
+inline constexpr char SEP_CHAR = '_';
+inline constexpr int OUTPUT_LINES = 8;
 
 static int shortcut_count = 0;
-static char output_buf[OUTPUT_LINES][1024];
+static std::array<std::string, OUTPUT_LINES> output_buf;
 static int output_count = 0;
 
 static void output_shift_down(const char* new_line) {
-    for (int i = OUTPUT_LINES - 1; i > 0; i--) {
-        strcpy(output_buf[i], output_buf[i - 1]);
+    if (output_count < OUTPUT_LINES) {
+        output_buf[output_count] = "";
+        output_count++;
     }
-    strncpy(output_buf[0], new_line, sizeof(output_buf[0]) - 1);
-    output_buf[0][sizeof(output_buf[0]) - 1] = '\0';
-    if (output_count < OUTPUT_LINES) output_count++;
+    std::rotate(output_buf.rbegin(), output_buf.rbegin() + 1, output_buf.rend());
+    output_buf[0] = new_line;
 }
 
 static void output_render() {
@@ -33,7 +37,7 @@ static void output_render() {
         if (actual_line >= LINES) break;
         move(actual_line, 0);
         clrtoeol();
-        printw("%s", output_buf[i]);
+        printw("%s", output_buf[i].c_str());
     }
     for (int i = output_count; i < OUTPUT_LINES; i++) {
         int actual_line = start_line + i;
@@ -59,24 +63,24 @@ void screen_cleanup() {
     endwin();
 }
 
-static void build_shortcut_line(const config* cfg, int idx, char* line, int max_len) {
+static void build_shortcut_line(const shortcut_entry& entry, char* line, int max_len) {
     line[0] = '\0';
     strncat(line, "  Shortcut: ", max_len - strlen(line) - 1);
-    strncat(line, cfg->entries[idx].keys[0], max_len - strlen(line) - 1);
+    strncat(line, entry.keys[0].c_str(), max_len - strlen(line) - 1);
 
-    for (int j = 1; j < cfg->entries[idx].key_count; j++) {
+    for (size_t j = 1; j < entry.keys.size(); j++) {
         strncat(line, "+", max_len - strlen(line) - 1);
-        strncat(line, cfg->entries[idx].keys[j], max_len - strlen(line) - 1);
+        strncat(line, entry.keys[j].c_str(), max_len - strlen(line) - 1);
     }
 
     strncat(line, " -> prompt: ", max_len - strlen(line) - 1);
-    strncat(line, cfg->entries[idx].prompt, max_len - strlen(line) - 1);
+    strncat(line, entry.prompt.c_str(), max_len - strlen(line) - 1);
 
-    if (cfg->entries[idx].special_key_count > 0) {
+    if (!entry.special_keys.empty()) {
         strncat(line, ", special: ", max_len - strlen(line) - 1);
-        for (int j = 0; j < cfg->entries[idx].special_key_count; j++) {
-            strncat(line, cfg->entries[idx].special_keys[j], max_len - strlen(line) - 1);
-            if (j + 1 < cfg->entries[idx].special_key_count) {
+        for (size_t j = 0; j < entry.special_keys.size(); j++) {
+            strncat(line, entry.special_keys[j].c_str(), max_len - strlen(line) - 1);
+            if (j + 1 < entry.special_keys.size()) {
                 strncat(line, "+", max_len - strlen(line) - 1);
             }
         }
@@ -103,24 +107,27 @@ static void draw_separator(int sep_line) {
 }
 
 void screen_draw_shortcuts(const config* cfg) {
-    shortcut_count = cfg->entry_count;
+    shortcut_count = static_cast<int>(cfg->entries.size());
     if (shortcut_count > SHORTCUT_LINES) shortcut_count = SHORTCUT_LINES;
 
     int term_width = getmaxx(stdscr);
     int max_line_width = term_width - 4;
 
-    for (int i = 0; i < shortcut_count; i++) {
+    int line_idx = 0;
+    for (const auto& entry : cfg->entries) {
+        if (line_idx >= shortcut_count) break;
         char line[512];
-        build_shortcut_line(cfg, i, line, sizeof(line));
+        build_shortcut_line(entry, line, sizeof(line));
 
-        if ((int)strlen(line) > max_line_width) {
+        if (static_cast<int>(strlen(line)) > max_line_width) {
             line[max_line_width] = '\0';
             strcat(line, "...");
         }
 
-        move(i, 0);
+        move(line_idx, 0);
         clrtoeol();
         printw("%s", line);
+        line_idx++;
     }
 
     for (int i = shortcut_count; i < SHORTCUT_LINES; i++) {
@@ -143,7 +150,7 @@ void screen_draw_vu_meter(float volume) {
     int bar_width = term_width - 9;
     if (bar_width < 1) bar_width = 1;
 
-    int filled = (int)(volume * bar_width);
+    int filled = static_cast<int>(volume * bar_width);
     if (filled > bar_width) filled = bar_width;
 
     int vu_line = shortcut_count + 2;
@@ -192,7 +199,7 @@ void screen_handle_resize(const config* cfg) {
     resize_term(0, 0);
     refresh();
     output_count = 0;
-    memset(output_buf, 0, sizeof(output_buf));
+    for (auto& line : output_buf) line.clear();
     screen_draw_shortcuts(cfg);
     screen_draw_vu_meter(0.0f);
     refresh();

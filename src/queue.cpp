@@ -1,6 +1,5 @@
 #include "queue.h"
-
-extern std::atomic<bool> abort_requested;
+#include "globals.h"
 
 void thread_safe_queue::push(const queue_item& item) {
     {
@@ -14,7 +13,7 @@ queue_item thread_safe_queue::pop() {
     std::unique_lock<std::mutex> lock(mutex_);
     cv_.wait(lock, [this] { return !queue_.empty() || abort_requested.load(); });
     if (queue_.empty() || abort_requested.load()) {
-        return queue_item{nullptr, 0, nullptr, 0, nullptr, None};
+        return queue_item{};
     }
     queue_item item = queue_.front();
     queue_.erase(queue_.begin());

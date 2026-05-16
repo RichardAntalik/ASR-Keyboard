@@ -1,0 +1,1135 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 4163433..5403275 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,8 +1,8 @@
+ Always compile and run with timeout before committing
+ 
+-Build by `cmake . && make`
++Build by `cmake . && make -j 32`
+ 
+-Use `./asr-kb -i 1 -c config.json` for testing. Config path is not hardcoded.
++Use `./asr-kb` for testing. Config path is not hardcoded.
+ 
+ For debugging segfaults: add `-fsanitize=address` to CMakeLists.txt C_FLAGS and CXX_FLAGS, rebuild, and run the binary to get ASan crash report.
+ 
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c46455a..0e459f6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -45,7 +45,6 @@ target_link_libraries(asr-kb
+     ${PULSE_LIB} 
+     ${NCURSES_LIB}
+     m
+-    pthread
+ )
+ if(ENABLE_ASAN)
+     target_link_libraries(asr-kb asan)
+diff --git a/src/client.cpp b/src/client.cpp
+index 2d32816..b803561 100644
+--- a/src/client.cpp
++++ b/src/client.cpp
+@@ -4,6 +4,8 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <vector>
++#include <string>
+ 
+ #include "json.hpp"
+ #include "pulse-recording.h"
+@@ -16,7 +18,7 @@ char* base64_encode(short* buffer, size_t size) {
+     static char result[MAX_AUDIO_SIZE * 3];
+     const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+     size_t i, j = 0;
+-    unsigned char* bytes = (unsigned char*)buffer;
++    unsigned char* bytes = reinterpret_cast<unsigned char*>(buffer);
+     for (i = 0; i < size * 2; i += 3) {
+         unsigned char a = bytes[i], b = (i+1 < size*2) ? bytes[i+1] : 0, c = (i+2 < size*2) ? bytes[i+2] : 0;
+         result[j++] = table[a >> 2];
+@@ -29,13 +31,13 @@ char* base64_encode(short* buffer, size_t size) {
+ }
+ 
+ static size_t write_cb(void* ptr, size_t size, size_t nmemb, void* data) {
+-    memcpy((char*)data + strlen((char*)data), (char*)ptr, size * nmemb);
++    memcpy(reinterpret_cast<char*>(data) + strlen(reinterpret_cast<char*>(data)), reinterpret_cast<char*>(ptr), size * nmemb);
+     return size * nmemb;
+ }
+ 
+ static void build_request_json(char* encoded, const char* prompt, int request_id, Window target_window, char* out_json, size_t jlen) {
+     snprintf(out_json, jlen, "{\"audio_bytes\": \"%s\", \"sample_rate\": 16000, \"prompt\": \"%s\", \"request_id\": %d, \"target_window\": %lu}",
+-             encoded, prompt, request_id, (unsigned long)target_window);
++             encoded, prompt, request_id, static_cast<unsigned long>(target_window));
+ }
+ 
+ static long execute_curl_request(const char* json, std::atomic<bool>& abort_requested, char* resp) {
+@@ -74,8 +76,8 @@ static long execute_curl_request(const char* json, std::atomic<bool>& abort_requ
+     return http_code;
+ }
+ 
+-static void process_response(long http_code, char* resp, Window target_window, const char* const* special_keys,
+-                              int special_key_count, std::atomic<bool>& abort_requested, int request_id) {
++static void process_response(long http_code, char* resp, Window target_window, const std::vector<std::string>& special_keys,
++                              std::atomic<bool>& abort_requested, int request_id) {
+     if (debug_enabled) printf("Debug: HTTP response code=%ld, request_id=%d\n", http_code, request_id);
+     fflush(stdout);
+ 
+@@ -92,10 +94,10 @@ static void process_response(long http_code, char* resp, Window target_window, c
+                 fflush(stdout);
+ 
+                 if (!cancelled) {
+-                    Window response_window = (Window)json_resp.value("target_window", (long)target_window);
+-                    if (debug_enabled) printf("Debug: typing to window 0x%lx\n", (unsigned long)response_window);
++                    Window response_window = static_cast<Window>(json_resp.value("target_window", static_cast<long>(target_window)));
++                    if (debug_enabled) printf("Debug: typing to window 0x%lx\n", static_cast<unsigned long>(response_window));
+                     fflush(stdout);
+-                    type_text(transcript.c_str(), (const char* const*)special_keys, special_key_count, response_window, abort_requested, request_id);
++                    type_text(transcript.c_str(), special_keys, response_window, abort_requested, request_id);
+                 } else {
+                     if (debug_enabled) printf("Debug: request %d cancelled, skipping typing\n", request_id);
+                 }
+@@ -106,8 +108,8 @@ static void process_response(long http_code, char* resp, Window target_window, c
+     }
+ }
+ 
+-void send_to_server(short* buffer, size_t size, const char* const* special_keys, int special_key_count,
+-                     const char* prompt, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
++void send_to_server(short* buffer, size_t size, const std::vector<std::string>& special_keys,
++                      const char* prompt, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
+     if (size == 0) return;
+ 
+     char* encoded = base64_encode(buffer, size);
+@@ -119,7 +121,7 @@ void send_to_server(short* buffer, size_t size, const char* const* special_keys,
+     long http_code = execute_curl_request(json, abort_requested, resp);
+ 
+     if (!abort_requested.load()) {
+-        process_response(http_code, resp, target_window, special_keys, special_key_count, abort_requested, request_id);
++        process_response(http_code, resp, target_window, special_keys, abort_requested, request_id);
+     }
+ 
+     free(json);
+diff --git a/src/client.h b/src/client.h
+index 32d926f..f038902 100644
+--- a/src/client.h
++++ b/src/client.h
+@@ -4,9 +4,12 @@
+ #include <X11/Xlib.h>
+ #include <pulse/pulseaudio.h>
+ #include <atomic>
++#include <vector>
++#include <string>
+ 
+-#define SERVER_URL "http://127.0.0.1:8000/transcribe"
++inline constexpr char const* SERVER_URL = "http://127.0.0.1:8000/transcribe";
+ 
+-void send_to_server(short* buffer, size_t size, const char* const* special_keys, int special_key_count, const char* prompt, Window target_window, std::atomic<bool>& abort_requested, int request_id);
++void send_to_server(short* buffer, size_t size, const std::vector<std::string>& special_keys,
++                     const char* prompt, Window target_window, std::atomic<bool>& abort_requested, int request_id);
+ 
+ #endif
+diff --git a/src/config-parsing.cpp b/src/config-parsing.cpp
+index 9e4cc8f..2b441da 100644
+--- a/src/config-parsing.cpp
++++ b/src/config-parsing.cpp
+@@ -4,6 +4,7 @@
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <errno.h>
++#include <algorithm>
+ 
+ bool create_default_config(const char* path) {
+     const char* default_content = R"([
+@@ -50,47 +51,26 @@ static char* read_config_file(const char* path, long* out_size) {
+     return content;
+ }
+ 
+-static void free_shortcut_entry(shortcut_entry* entry) {
+-    for (int j = 0; j < entry->key_count; j++) {
+-        free(entry->keys[j]);
++static bool parse_entry(nlohmann::json& entry, shortcut_entry& parsed) {
++    for (auto& k : entry["shortcut"]) {
++        parsed.keys.push_back(k.get<std::string>());
+     }
+-    free(entry->keys);
+-    free(entry->prompt);
+-    for (int j = 0; j < entry->special_key_count; j++) {
+-        free(entry->special_keys[j]);
+-    }
+-    free(entry->special_keys);
+-}
+-
+-static bool parse_entry(nlohmann::json& entry, shortcut_entry* parsed, int idx) {
+-    parsed->key_count = entry["shortcut"].size();
+-    parsed->keys = (char**)calloc(parsed->key_count, sizeof(char*));
+-    for (int j = 0; j < parsed->key_count; j++) {
+-        parsed->keys[j] = strdup(entry["shortcut"][j].get<std::string>().c_str());
+-    }
+-    parsed->prompt = strdup(entry["prompt"].get<std::string>().c_str());
++    parsed.prompt = entry["prompt"].get<std::string>();
+ 
+     if (entry.contains("special_key")) {
+         if (entry["special_key"].is_array()) {
+-            parsed->special_key_count = entry["special_key"].size();
+-            parsed->special_keys = (char**)calloc(parsed->special_key_count, sizeof(char*));
+-            for (int j = 0; j < parsed->special_key_count; j++) {
+-                parsed->special_keys[j] = strdup(entry["special_key"][j].get<std::string>().c_str());
++            for (auto& sk : entry["special_key"]) {
++                parsed.special_keys.push_back(sk.get<std::string>());
+             }
+         } else {
+-            parsed->special_key_count = 1;
+-            parsed->special_keys = (char**)calloc(1, sizeof(char*));
+-            parsed->special_keys[0] = strdup(entry["special_key"].get<std::string>().c_str());
++            parsed.special_keys.push_back(entry["special_key"].get<std::string>());
+         }
+-    } else {
+-        parsed->special_key_count = 0;
+-        parsed->special_keys = nullptr;
+     }
+ 
+     return true;
+ }
+ 
+-static bool parse_config_json(const char* content, config* cfg) {
++static bool parse_config_json(const char* content, config& cfg) {
+     nlohmann::json json_data;
+     try {
+         json_data = nlohmann::json::parse(content);
+@@ -100,58 +80,40 @@ static bool parse_config_json(const char* content, config* cfg) {
+     }
+ 
+     try {
+-        cfg->entry_count = json_data.size();
+-        cfg->entries = (shortcut_entry*)calloc(cfg->entry_count, sizeof(shortcut_entry));
+-
+-        for (int i = 0; i < cfg->entry_count; i++) {
+-            if (!parse_entry(json_data[i], &cfg->entries[i], i)) {
+-                free_config(cfg);
++        for (auto& entry : json_data) {
++            shortcut_entry parsed;
++            if (!parse_entry(entry, parsed)) {
+                 return false;
+             }
++            cfg.entries.push_back(std::move(parsed));
+         }
+     } catch (const nlohmann::json::exception& e) {
+         printf("Config structure error: %s\n", e.what());
+-        free_config(cfg);
+         return false;
+     }
+ 
+-    for (int i = 0; i < cfg->entry_count - 1; i++) {
+-        for (int j = i + 1; j < cfg->entry_count; j++) {
+-            if (cfg->entries[i].key_count < cfg->entries[j].key_count) {
+-                shortcut_entry temp = cfg->entries[i];
+-                cfg->entries[i] = cfg->entries[j];
+-                cfg->entries[j] = temp;
+-            }
+-        }
+-    }
++    std::sort(cfg.entries.begin(), cfg.entries.end(), [](const shortcut_entry& a, const shortcut_entry& b) {
++        return a.keys.size() > b.keys.size();
++    });
+     return true;
+ }
+ 
+ config* load_config(const char* path) {
+-    config* cfg = (config*)malloc(sizeof(config));
+-    cfg->entry_count = 0;
++    config* cfg = new config();
+ 
+     long file_size;
+     char* content = read_config_file(path, &file_size);
+     if (!content) {
+-        free(cfg);
++        delete cfg;
+         return nullptr;
+     }
+ 
+-    if (!parse_config_json(content, cfg)) {
++    if (!parse_config_json(content, *cfg)) {
+         free(content);
++        delete cfg;
+         return nullptr;
+     }
+ 
+     free(content);
+     return cfg;
+ }
+-
+-void free_config(config* cfg) {
+-    if (!cfg) return;
+-    for (int i = 0; i < cfg->entry_count; i++) {
+-        free_shortcut_entry(&cfg->entries[i]);
+-    }
+-    free(cfg->entries);
+-    free(cfg);
+-}
+diff --git a/src/config-parsing.h b/src/config-parsing.h
+index 72dc857..d593826 100644
+--- a/src/config-parsing.h
++++ b/src/config-parsing.h
+@@ -5,7 +5,6 @@
+ #include "keyboard-sim.h"
+ 
+ config* load_config(const char* path);
+-void free_config(config* cfg);
+ bool create_default_config(const char* path);
+ 
+ #endif
+diff --git a/src/keyboard-sim.cpp b/src/keyboard-sim.cpp
+index e0cc363..569d039 100644
+--- a/src/keyboard-sim.cpp
++++ b/src/keyboard-sim.cpp
+@@ -1,4 +1,5 @@
+ #include "keyboard-sim.h"
++#include "globals.h"
+ #include <X11/Xatom.h>
+ #include <X11/keysym.h>
+ #include <X11/extensions/XTest.h>
+@@ -6,8 +7,6 @@
+ #include <stdio.h>
+ #include <time.h>
+ 
+-extern bool debug_enabled;
+-extern std::atomic<int> held_key_count;
+ #include "request-storage.h"
+ 
+ Window get_active_window(Display* dpy) {
+@@ -58,7 +57,7 @@ static void wait_for_keys_released() {
+ }
+ 
+ static Display* open_display_and_focus(const char* text, Window target_window, Window* out_prev_focus) {
+-    if (debug_enabled) printf("Debug: type_text text='%s', special_key_count=%d, target=0x%lx\n", text, 0, (unsigned long)target_window);
++    if (debug_enabled) printf("Debug: type_text text='%s', target=0x%lx\n", text, static_cast<unsigned long>(target_window));
+ 
+     wait_for_keys_released();
+ 
+@@ -89,7 +88,7 @@ static Display* open_display_and_focus(const char* text, Window target_window, W
+         struct timespec ts = {0, 50000000L};
+         nanosleep(&ts, NULL);
+ 
+-        if (debug_enabled) printf("Debug: type_text focused window 0x%lx (was 0x%lx)\n", (unsigned long)target_window, (unsigned long)*out_prev_focus);
++        if (debug_enabled) printf("Debug: type_text focused window 0x%lx (was 0x%lx)\n", static_cast<unsigned long>(target_window), static_cast<unsigned long>(*out_prev_focus));
+     }
+ 
+     return dpy;
+@@ -100,7 +99,7 @@ static void type_char(Display* dpy, char c) {
+         char buf[2] = {c, 0};
+         simulate_key(dpy, buf, false);
+     } else if (c >= 'A' && c <= 'Z') {
+-        char buf[2] = {(char)(c + 32), 0};
++        char buf[2] = {static_cast<char>(c + 32), 0};
+         simulate_key(dpy, buf, true);
+     } else if (c >= '0' && c <= '9') {
+         char buf[2] = {c, 0};
+@@ -142,21 +141,21 @@ static void type_characters(Display* dpy, const char* text, std::atomic<bool>& a
+     }
+ }
+ 
+-static void type_special_keys(Display* dpy, const char* const* special_keys, int special_key_count, std::atomic<bool>& abort_requested, int request_id) {
+-    if (debug_enabled) printf("Debug: type_text special_keys count=%d\n", special_key_count);
++static void type_special_keys(Display* dpy, const std::vector<std::string>& special_keys, std::atomic<bool>& abort_requested, int request_id) {
++    if (debug_enabled) printf("Debug: type_text special_keys count=%zu\n", special_keys.size());
+ 
+-    for (int i = 0; i < special_key_count; i++) {
++    for (const auto& key : special_keys) {
+         if (abort_requested.load()) break;
+         if (request_id > 0 && g_request_storage.is_cancelled(request_id)) break;
+ 
+-        if (strcmp(special_keys[i], "enter") == 0 || strcmp(special_keys[i], "Return") == 0) {
++        if (key == "enter" || key == "Return") {
+             simulate_key(dpy, "Return", false);
+-        } else if (strcmp(special_keys[i], "space") == 0 || strcmp(special_keys[i], " ") == 0) {
++        } else if (key == "space" || key == " ") {
+             simulate_key(dpy, "space", false);
+-        } else if (strcmp(special_keys[i], "tab") == 0 || strcmp(special_keys[i], "Tab") == 0) {
++        } else if (key == "tab" || key == "Tab") {
+             simulate_key(dpy, "Tab", false);
+         } else {
+-            simulate_key(dpy, special_keys[i], false);
++            simulate_key(dpy, key.c_str(), false);
+         }
+     }
+ }
+@@ -170,14 +169,14 @@ static void cleanup_type_text(Display* dpy, Window target_window, Window prev_fo
+     if (target_window != None && prev_focus != None) {
+         XSetInputFocus(dpy, prev_focus, RevertToParent, CurrentTime);
+         XFlush(dpy);
+-        if (debug_enabled) printf("Debug: type_text restored focus to 0x%lx\n", (unsigned long)prev_focus);
++        if (debug_enabled) printf("Debug: type_text restored focus to 0x%lx\n", static_cast<unsigned long>(prev_focus));
+     }
+ 
+     if (debug_enabled) printf("Debug: type_text closing display\n");
+     XCloseDisplay(dpy);
+ }
+ 
+-void type_text(const char* text, const char* const* special_keys, int special_key_count, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
++void type_text(const char* text, const std::vector<std::string>& special_keys, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
+     if (!text) return;
+ 
+     Window prev_focus = None;
+@@ -188,16 +187,11 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
+ 
+     if (abort_requested.load()) {
+         if (debug_enabled) printf("Debug: type_text aborted before special keys\n");
+-        goto cleanup;
+-    }
+-
+-    if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
++    } else if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
+         if (debug_enabled) printf("Debug: type_text request %d cancelled before special keys\n", request_id);
+-        goto cleanup;
++    } else {
++        type_special_keys(dpy, special_keys, abort_requested, request_id);
+     }
+ 
+-    type_special_keys(dpy, special_keys, special_key_count, abort_requested, request_id);
+-
+-cleanup:
+     cleanup_type_text(dpy, target_window, prev_focus);
+ }
+diff --git a/src/keyboard-sim.h b/src/keyboard-sim.h
+index 13e9c62..bce3532 100644
+--- a/src/keyboard-sim.h
++++ b/src/keyboard-sim.h
+@@ -3,25 +3,24 @@
+ 
+ #include <X11/Xlib.h>
+ #include <atomic>
++#include <vector>
++#include <string>
+ 
+ extern bool debug_enabled;
+ 
+ struct shortcut_entry {
+-    char** keys;
+-    int key_count;
+-    char* prompt;
+-    char** special_keys;
+-    int special_key_count;
++    std::vector<std::string> keys;
++    std::string prompt;
++    std::vector<std::string> special_keys;
+ };
+ 
+ struct config {
+-    shortcut_entry* entries;
+-    int entry_count;
++    std::vector<shortcut_entry> entries;
+ };
+ 
+ KeySym config_key_to_keysym(const char* name);
+ void simulate_key(Display* dpy, const char* keysym_name, bool shift);
+ Window get_active_window(Display* dpy);
+-void type_text(const char* text, const char* const* special_keys, int special_key_count, Window target_window, std::atomic<bool>& abort_requested, int request_id = 0);
++void type_text(const char* text, const std::vector<std::string>& special_keys, Window target_window, std::atomic<bool>& abort_requested, int request_id = 0);
+ 
+ #endif
+diff --git a/src/main.cpp b/src/main.cpp
+index ab922c4..85c06ce 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -5,13 +5,18 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <stdbool.h>
+-#include <pthread.h>
+ #include <string.h>
+ #include <time.h>
+ #include <unistd.h>
+ #include <sys/stat.h>
+ #include <atomic>
+ #include <csignal>
++#include <thread>
++#include <mutex>
++#include <future>
++#include <memory>
++#include <vector>
++#include <string>
+ 
+ #include "json.hpp"
+ #include "config-parsing.h"
+@@ -22,25 +27,24 @@
+ #include "screen-manager.h"
+ #include "request-storage.h"
+ #include "vu-thread.h"
++#include "globals.h"
+ 
+ std::atomic<bool> recording_active{false};
+ std::atomic<bool> abort_requested{false};
+ std::atomic<int> held_key_count{0};
+ bool debug_enabled{false};
+-char* config_path = nullptr;
++std::string config_path_str;
+ 
+ thread_safe_queue transcription_queue;
+ 
+ static config* g_cfg_for_resize = nullptr;
++static volatile sig_atomic_t resize_pending = false;
+ 
++extern std::mutex screen_mutex;
+ extern void screen_handle_resize(const config* cfg);
+ 
+ static void sigwinch_handler(int) {
+-    if (g_cfg_for_resize) {
+-        pthread_mutex_lock(&screen_mutex);
+-        screen_handle_resize(g_cfg_for_resize);
+-        pthread_mutex_unlock(&screen_mutex);
+-    }
++    resize_pending = 1;
+ }
+ 
+ static void parse_args(int argc, char* argv[], bool* remember_window) {
+@@ -57,7 +61,7 @@ static void parse_args(int argc, char* argv[], bool* remember_window) {
+             debug_enabled = true;
+         }
+         if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
+-            config_path = strdup(argv[i+1]);
++            config_path_str = argv[i+1];
+             i++;
+         }
+         if (strcmp(argv[i], "-a") == 0) {
+@@ -77,29 +81,22 @@ static void parse_args(int argc, char* argv[], bool* remember_window) {
+     }
+ }
+ 
+-static void resolve_config_path() {
+-    if (config_path != nullptr) return;
++static const char* resolve_config_path() {
++    if (!config_path_str.empty()) return config_path_str.c_str();
+ 
+     const char* xdg_config = getenv("XDG_CONFIG_HOME");
+     const char* home_dir = getenv("HOME");
+ 
+     if (xdg_config) {
+-        char* new_path = (char*)malloc(strlen(xdg_config) + 20);
+-        snprintf(new_path, strlen(xdg_config) + 20, "%s/asr-kb/config.json", xdg_config);
+-        config_path = new_path;
++        config_path_str = std::string(xdg_config) + "/asr-kb/config.json";
+     } else if (home_dir) {
+-        char* new_path = (char*)malloc(strlen(home_dir) + 20);
+-        snprintf(new_path, strlen(home_dir) + 20, "%s/.config/asr-kb/config.json", home_dir);
+-        config_path = new_path;
++        config_path_str = std::string(home_dir) + "/.config/asr-kb/config.json";
+     } else {
+         char cwd[256];
+         if (!getcwd(cwd, sizeof(cwd))) exit(1);
+-        config_path = strdup(cwd);
+-        char* new_path = (char*)malloc(strlen(config_path) + 20);
+-        snprintf(new_path, strlen(config_path) + 20, "%s/.config/asr-kb/config.json", config_path);
+-        free(config_path);
+-        config_path = new_path;
++        config_path_str = std::string(cwd) + "/.config/asr-kb/config.json";
+     }
++    return config_path_str.c_str();
+ }
+ 
+ static int init_x11(Display** out_dpy) {
+@@ -123,13 +120,14 @@ static int init_x11(Display** out_dpy) {
+ }
+ 
+ static config* load_or_create_config() {
+-    config* cfg = load_config(config_path);
++    const char* path = resolve_config_path();
++    config* cfg = load_config(path);
+ 
+     if (cfg == nullptr) {
+         char response = getchar();
+         if (response == 'y' || response == 'Y') {
+-            if (create_default_config(config_path)) {
+-                cfg = load_config(config_path);
++            if (create_default_config(path)) {
++                cfg = load_config(path);
+             } else {
+                 return nullptr;
+             }
+@@ -150,58 +148,41 @@ static void init_screen(config* cfg) {
+     screen_draw_vu_meter(0.0f);
+ }
+ 
+-static void* worker_thread_func(void* arg) {
++static void worker_thread_func() {
+     while (true) {
+         queue_item item = transcription_queue.pop();
+-        if (item.buffer == nullptr) break;
++        if (item.buffer.empty()) break;
+ 
+         if (g_request_storage.is_cancelled(item.request_id)) {
+             if (debug_enabled) printf("Debug: worker request %d cancelled, skipping\n", item.request_id);
+-            free(item.buffer);
+-            for (int k = 0; k < item.special_key_count; k++) {
+-                free(item.special_keys[k]);
+-            }
+-            free(item.special_keys);
+             g_request_storage.remove(item.request_id);
+             continue;
+         }
+ 
+-        if (debug_enabled) printf("Debug: worker processing request %d, %zu samples\n", item.request_id, item.size);
+-        send_to_server(item.buffer, item.size, (const char* const*)item.special_keys, item.special_key_count, item.prompt, item.target_window, abort_requested, item.request_id);
++        if (debug_enabled) printf("Debug: worker processing request %d, %zu samples\n", item.request_id, item.buffer.size());
++        send_to_server(item.buffer.data(), item.buffer.size(), item.special_keys, item.prompt.c_str(), item.target_window, abort_requested, item.request_id);
+ 
+-        free(item.buffer);
+-        for (int k = 0; k < item.special_key_count; k++) {
+-            free(item.special_keys[k]);
+-        }
+-        free(item.special_keys);
+         g_request_storage.remove(item.request_id);
+     }
+-    return nullptr;
+-}
+-
+-static void setup_worker_thread(pthread_t* worker_thread) {
+-    pthread_create(worker_thread, NULL, worker_thread_func, NULL);
+ }
+ 
+ typedef struct {
+     bool keycode_state[512];
+-    char** active_special_keys;
+-    int active_special_key_count;
++    std::vector<std::string> active_special_keys;
+     int active_entry;
+     Window target_window;
+-    pthread_t thread_id;
++    std::thread recording_thread;
++    std::unique_ptr<std::promise<record_state*>> recording_promise;
+     config* cfg;
+     bool remember_window;
+     Display* display;
+     int xi_opcode;
+-    pthread_t worker_thread;
++    std::thread worker_thread;
+     int raw_keycode;
+ } app_state;
+ 
+ static void init_app_state(app_state* state) {
+     memset(state->keycode_state, 0, sizeof(state->keycode_state));
+-    state->active_special_keys = nullptr;
+-    state->active_special_key_count = 0;
+     state->active_entry = -1;
+     state->target_window = None;
+ }
+@@ -221,16 +202,17 @@ static void handle_escape(app_state* state, XIRawEvent* raw) {
+ 
+ static void draw_vu_if_recording() {
+     if (recording_active.load()) {
+-        screen_draw_vu_meter(current_volume);
++        screen_draw_vu_meter(current_volume.load());
+         screen_refresh();
+     }
+ }
+ 
+ static bool check_hotkey_match(app_state* state) {
+-    for (int i = 0; i < state->cfg->entry_count; i++) {
++    int idx = 0;
++    for (const auto& entry : state->cfg->entries) {
+         bool all_pressed = true;
+-        for (int j = 0; j < state->cfg->entries[i].key_count; j++) {
+-            KeySym target_keysym = config_key_to_keysym(state->cfg->entries[i].keys[j]);
++        for (const auto& key : entry.keys) {
++            KeySym target_keysym = config_key_to_keysym(key.c_str());
+             KeyCode target_code = XKeysymToKeycode(state->display, target_keysym);
+ 
+             if (target_code == 0 || target_code >= 512 || !state->keycode_state[target_code]) {
+@@ -242,24 +224,20 @@ static bool check_hotkey_match(app_state* state) {
+         if (all_pressed) {
+             recording_active.store(true);
+             vu_thread_start();
+-            state->active_special_key_count = state->cfg->entries[i].special_key_count;
+-            if (state->active_special_key_count > 0) {
+-                state->active_special_keys = (char**)malloc(state->active_special_key_count * sizeof(char*));
+-                for (int j = 0; j < state->active_special_key_count; j++) {
+-                    state->active_special_keys[j] = strdup(state->cfg->entries[i].special_keys[j]);
+-                }
+-            }
+-            state->active_entry = i;
++            state->active_special_keys = entry.special_keys;
++            state->active_entry = idx;
+             if (state->remember_window) {
+                 state->target_window = None;
+             } else {
+                 state->target_window = get_active_window(state->display);
+             }
+ 
+-            if (debug_enabled) printf("Debug: all keys pressed! starting recording, target=0x%lx\n", (unsigned long)state->target_window);
+-            pthread_create(&state->thread_id, NULL, record_thread, NULL);
++            if (debug_enabled) printf("Debug: all keys pressed! starting recording, target=0x%lx\n", static_cast<unsigned long>(state->target_window));
++            state->recording_promise = std::make_unique<std::promise<record_state*>>();
++            state->recording_thread = std::thread(record_thread, static_cast<void*>(state->recording_promise.get()));
+             return true;
+         }
++        idx++;
+     }
+     return false;
+ }
+@@ -276,8 +254,8 @@ static void handle_key_press(app_state* state, XIRawEvent* raw) {
+ }
+ 
+ static bool is_active_key_released(app_state* state, int keycode) {
+-    for (int j = 0; j < state->cfg->entries[state->active_entry].key_count; j++) {
+-        KeySym target_keysym = config_key_to_keysym(state->cfg->entries[state->active_entry].keys[j]);
++    for (const auto& key : state->cfg->entries[state->active_entry].keys) {
++        KeySym target_keysym = config_key_to_keysym(key.c_str());
+         KeyCode target_code = XKeysymToKeycode(state->display, target_keysym);
+         if (target_code == keycode) {
+             return true;
+@@ -288,39 +266,33 @@ static bool is_active_key_released(app_state* state, int keycode) {
+ 
+ static void queue_transcription(app_state* state, struct record_state* res) {
+     queue_item item;
+-    item.buffer = res->buffer;
+-    item.size = res->total;
+-    item.special_key_count = state->active_special_key_count;
+-    item.special_keys = (char**)malloc(state->active_special_key_count * sizeof(char*));
+-    for(int k=0; k<state->active_special_key_count; k++) {
+-        item.special_keys[k] = strdup(state->active_special_keys[k]);
+-    }
++    item.buffer.assign(res->buffer.begin(), res->buffer.end());
++    item.special_keys = state->active_special_keys;
+     item.prompt = state->cfg->entries[state->active_entry].prompt;
+     item.target_window = state->target_window;
+     item.request_id = g_request_storage.add_request();
+ 
+     transcription_queue.push(item);
+ 
+-    free(res);
++    delete res;
+ }
+ 
+ static void handle_key_release(app_state* state, struct record_state* res) {
+-    pthread_mutex_lock(&screen_mutex);
+-    screen_print(0, "Finished. Captured %zu samples.", res->total);
+-    pthread_mutex_unlock(&screen_mutex);
++    {
++        std::lock_guard<std::mutex> lock(screen_mutex);
++        screen_print(0, "Finished. Captured %zu samples.", res->total);
++    }
+ 
+     queue_transcription(state, res);
+ 
+-    free(state->active_special_keys);
+-    state->active_special_keys = nullptr;
+-    state->active_special_key_count = 0;
++    state->active_special_keys.clear();
+     state->active_entry = -1;
+ }
+ 
+ static void process_xi_event(app_state* state, Display* dpy, XGenericEventCookie* cookie) {
+     if (cookie->extension != state->xi_opcode || !XGetEventData(dpy, cookie)) return;
+ 
+-    XIRawEvent* raw = (XIRawEvent*)cookie->data;
++    XIRawEvent* raw = reinterpret_cast<XIRawEvent*>(cookie->data);
+     int keycode = raw->detail;
+ 
+     if (cookie->evtype == XI_RawKeyPress) {
+@@ -333,16 +305,17 @@ static void process_xi_event(app_state* state, Display* dpy, XGenericEventCookie
+             if (is_active_key_released(state, keycode)) {
+                 state->raw_keycode = keycode;
+                 recording_active.store(false);
+-                current_volume = 0.0f;
+-                pthread_mutex_lock(&screen_mutex);
+-                screen_draw_vu_meter(0.0f);
+-                pthread_mutex_unlock(&screen_mutex);
++                current_volume.store(0.0f);
++                {
++                    std::lock_guard<std::mutex> lock(screen_mutex);
++                    screen_draw_vu_meter(0.0f);
++                }
+                 vu_thread_stop();
+                 vu_thread_wait();
+-                void* ret;
+-                pthread_join(state->thread_id, &ret);
+-                struct record_state* res = (struct record_state*)ret;
++                auto future = state->recording_promise->get_future();
++                record_state* res = future.get();
+                 handle_key_release(state, res);
++                state->recording_thread.join();
+             }
+         }
+     }
+@@ -352,7 +325,6 @@ static void process_xi_event(app_state* state, Display* dpy, XGenericEventCookie
+ int main(int argc, char* argv[]) {
+     bool remember_window = false;
+     parse_args(argc, argv, &remember_window);
+-    resolve_config_path();
+ 
+     Display* dpy = nullptr;
+     int xi_opcode = init_x11(&dpy);
+@@ -369,20 +341,27 @@ int main(int argc, char* argv[]) {
+     state.display = dpy;
+     state.xi_opcode = xi_opcode;
+ 
+-    setup_worker_thread(&state.worker_thread);
++    state.worker_thread = std::thread(worker_thread_func);
+ 
+     while (1) {
+         XEvent ev;
+         XNextEvent(dpy, &ev);
+         draw_vu_if_recording();
++        if (resize_pending) {
++            resize_pending = 0;
++            if (g_cfg_for_resize) {
++                std::lock_guard<std::mutex> lock(screen_mutex);
++                screen_handle_resize(g_cfg_for_resize);
++            }
++        }
+         if (ev.type == GenericEvent && ev.xcookie.extension == state.xi_opcode) {
+             process_xi_event(&state, dpy, &ev.xcookie);
+         }
+     }
+ 
+     abort_requested.store(true);
+-    transcription_queue.push(queue_item{nullptr, 0, nullptr, 0, nullptr, None, 0});
+-    pthread_join(state.worker_thread, nullptr);
++    transcription_queue.push(queue_item{});
++    state.worker_thread.join();
+ 
+     screen_cleanup();
+     XCloseDisplay(dpy);
+diff --git a/src/pulse-recording.cpp b/src/pulse-recording.cpp
+index b08133d..f63a8a2 100644
+--- a/src/pulse-recording.cpp
++++ b/src/pulse-recording.cpp
+@@ -1,12 +1,11 @@
+ #include "pulse-recording.h"
++#include "globals.h"
+ #include <cstdio>
+ #include <cstring>
+ #include <math.h>
+ 
+-extern std::atomic<bool> abort_requested;
+-
+ char source_name[MAX_SOURCE_NAME] = "";
+-float current_volume = 0.0f;
++std::atomic<float> current_volume{0.0f};
+ 
+ typedef struct {
+     int target_index;
+@@ -15,7 +14,7 @@ typedef struct {
+ } list_context;
+ 
+ void source_info_cb(pa_context *c, const pa_source_info *i, int eol, void *userdata) {
+-    list_context *ctx = (list_context*)userdata;
++    list_context *ctx = reinterpret_cast<list_context*>(userdata);
+     if (eol) { ctx->done = true; return; }
+     
+     if (ctx->target_index == -1) {
+@@ -43,18 +42,18 @@ void run_pa_query(int index) {
+ }
+ 
+ void record_request_callback(pa_stream *p, size_t nbytes, void *userdata) {
+-    struct record_state *state = (struct record_state*)userdata;
++    struct record_state *state = reinterpret_cast<struct record_state*>(userdata);
+     const void *data;
+     if (pa_stream_peek(p, &data, &nbytes) < 0) return;
+     
+     if (data) {
+         size_t samples = nbytes / sizeof(short);
+-        if (state->total + samples < MAX_AUDIO_SIZE) {
+-            memcpy(state->buffer + state->total, data, nbytes);
++        if (state->buffer.size() - state->total + samples <= MAX_AUDIO_SIZE) {
++            state->buffer.insert(state->buffer.end(), reinterpret_cast<const short*>(data), reinterpret_cast<const short*>(data) + samples);
+             state->total += samples;
+         }
+         
+-        const short* samples_ptr = (const short*)data;
++        const short* samples_ptr = reinterpret_cast<const short*>(data);
+         double sum = 0.0;
+         for (size_t i = 0; i < samples; i++) {
+             double val = (double)samples_ptr[i] / 32768.0;
+@@ -63,21 +62,21 @@ void record_request_callback(pa_stream *p, size_t nbytes, void *userdata) {
+         float rms = (float)sqrt(sum / (double)samples);
+         
+         if (rms < 0.001f) {
+-            current_volume = 0.0f;
++            current_volume.store(0.0f);
+         } else {
+             float db = 20.0f * log10f(rms);
+-            current_volume = (db + 60.0f) / 60.0f;
++            current_volume.store((db + 60.0f) / 60.0f);
+         }
+-        if (current_volume < 0.0f) current_volume = 0.0f;
+-        if (current_volume > 1.0f) current_volume = 1.0f;
++        float vol = current_volume.load();
++        if (vol < 0.0f) current_volume.store(0.0f);
++        if (vol > 1.0f) current_volume.store(1.0f);
+     }
+     pa_stream_drop(p);
+ }
+ 
+ static struct record_state* create_record_state(pa_context* ctx, pa_stream** out_stream) {
+-    struct record_state* state = (struct record_state*)malloc(sizeof(struct record_state));
+-    state->buffer = (short*)malloc(MAX_AUDIO_SIZE * sizeof(short));
+-    state->total = 0;
++    struct record_state* state = new record_state();
++    state->buffer.reserve(MAX_AUDIO_SIZE);
+ 
+     pa_sample_spec ss = {.format = PA_SAMPLE_S16LE, .rate = 16000, .channels = 1};
+     pa_stream* s = pa_stream_new(ctx, "capture", &ss, NULL);
+@@ -114,7 +113,7 @@ static void cleanup_pa(pa_mainloop* ml, pa_context* ctx) {
+     pa_mainloop_free(ml);
+ }
+ 
+-void* record_thread(void* arg) {
++void* record_thread(void* promise_ptr) {
+     pa_mainloop* ml = pa_mainloop_new();
+     pa_context* ctx = pa_context_new(pa_mainloop_get_api(ml), "asr-rec");
+     pa_context_connect(ctx, NULL, PA_CONTEXT_NOFLAGS, NULL);
+@@ -126,5 +125,7 @@ void* record_thread(void* arg) {
+     run_record_loop(ml, s);
+     cleanup_pa(ml, ctx);
+ 
+-    return (void*)state;
++    std::promise<record_state*>* prom = reinterpret_cast<std::promise<record_state*>*>(promise_ptr);
++    prom->set_value(state);
++    return nullptr;
+ }
+diff --git a/src/pulse-recording.h b/src/pulse-recording.h
+index e25236c..a606493 100644
+--- a/src/pulse-recording.h
++++ b/src/pulse-recording.h
+@@ -3,22 +3,20 @@
+ 
+ #include <pulse/pulseaudio.h>
+ #include <atomic>
++#include <vector>
++#include <future>
+ 
+-#define MAX_AUDIO_SIZE (1024 * 8192)
+-#define MAX_SOURCE_NAME 256
++inline constexpr size_t MAX_AUDIO_SIZE = 1024 * 8192;
++inline constexpr size_t MAX_SOURCE_NAME = 256;
+ 
+-extern std::atomic<bool> recording_active;
+ extern char source_name[MAX_SOURCE_NAME];
+-extern float current_volume;
+ 
+ struct record_state {
+-    short* buffer;
+-    size_t total;
+-    pa_volume_t* last_volume;
+-    bool volume_valid;
++    std::vector<short> buffer;
++    size_t total = 0;
+ };
+ 
+ void run_pa_query(int index);
+-void* record_thread(void* arg);
++void* record_thread(void* promise_ptr);
+ 
+ #endif
+diff --git a/src/queue.cpp b/src/queue.cpp
+index 645ec9e..8476078 100644
+--- a/src/queue.cpp
++++ b/src/queue.cpp
+@@ -1,6 +1,5 @@
+ #include "queue.h"
+-
+-extern std::atomic<bool> abort_requested;
++#include "globals.h"
+ 
+ void thread_safe_queue::push(const queue_item& item) {
+     {
+@@ -14,7 +13,7 @@ queue_item thread_safe_queue::pop() {
+     std::unique_lock<std::mutex> lock(mutex_);
+     cv_.wait(lock, [this] { return !queue_.empty() || abort_requested.load(); });
+     if (queue_.empty() || abort_requested.load()) {
+-        return queue_item{nullptr, 0, nullptr, 0, nullptr, None};
++        return queue_item{};
+     }
+     queue_item item = queue_.front();
+     queue_.erase(queue_.begin());
+diff --git a/src/queue.h b/src/queue.h
+index 71d26b1..1bbc5bd 100644
+--- a/src/queue.h
++++ b/src/queue.h
+@@ -7,11 +7,9 @@
+ #include "keyboard-sim.h"
+ 
+ struct queue_item {
+-    short* buffer;
+-    size_t size;
+-    char** special_keys;
+-    int special_key_count;
+-    const char* prompt;
++    std::vector<short> buffer;
++    std::vector<std::string> special_keys;
++    std::string prompt;
+     Window target_window;
+     int request_id;
+ };
+diff --git a/src/screen-manager.cpp b/src/screen-manager.cpp
+index 33b19c8..17feab3 100644
+--- a/src/screen-manager.cpp
++++ b/src/screen-manager.cpp
+@@ -3,15 +3,17 @@
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <cstring>
+-#include <signal.h>
+ #include <pulse/pulseaudio.h>
++#include <algorithm>
+ 
+-#define VU_PREFIX "["
+-#define VU_SUFFIX "]"
+-#define VU_CHARS ".:=#"
+-#define SHORTCUT_LINES 5
+-#define SEP_CHAR '_'
+-#define OUTPUT_LINES 8
++std::mutex screen_mutex;
++
++inline constexpr char const* VU_PREFIX = "[";
++inline constexpr char const* VU_SUFFIX = "]";
++inline constexpr char const* VU_CHARS = ".:=#";
++inline constexpr int SHORTCUT_LINES = 5;
++inline constexpr char SEP_CHAR = '_';
++inline constexpr int OUTPUT_LINES = 8;
+ 
+ static int shortcut_count = 0;
+ static char output_buf[OUTPUT_LINES][1024];
+@@ -62,21 +64,21 @@ void screen_cleanup() {
+ static void build_shortcut_line(const config* cfg, int idx, char* line, int max_len) {
+     line[0] = '\0';
+     strncat(line, "  Shortcut: ", max_len - strlen(line) - 1);
+-    strncat(line, cfg->entries[idx].keys[0], max_len - strlen(line) - 1);
++    strncat(line, cfg->entries[idx].keys[0].c_str(), max_len - strlen(line) - 1);
+ 
+-    for (int j = 1; j < cfg->entries[idx].key_count; j++) {
++    for (size_t j = 1; j < cfg->entries[idx].keys.size(); j++) {
+         strncat(line, "+", max_len - strlen(line) - 1);
+-        strncat(line, cfg->entries[idx].keys[j], max_len - strlen(line) - 1);
++        strncat(line, cfg->entries[idx].keys[j].c_str(), max_len - strlen(line) - 1);
+     }
+ 
+     strncat(line, " -> prompt: ", max_len - strlen(line) - 1);
+-    strncat(line, cfg->entries[idx].prompt, max_len - strlen(line) - 1);
++    strncat(line, cfg->entries[idx].prompt.c_str(), max_len - strlen(line) - 1);
+ 
+-    if (cfg->entries[idx].special_key_count > 0) {
++    if (!cfg->entries[idx].special_keys.empty()) {
+         strncat(line, ", special: ", max_len - strlen(line) - 1);
+-        for (int j = 0; j < cfg->entries[idx].special_key_count; j++) {
+-            strncat(line, cfg->entries[idx].special_keys[j], max_len - strlen(line) - 1);
+-            if (j + 1 < cfg->entries[idx].special_key_count) {
++        for (size_t j = 0; j < cfg->entries[idx].special_keys.size(); j++) {
++            strncat(line, cfg->entries[idx].special_keys[j].c_str(), max_len - strlen(line) - 1);
++            if (j + 1 < cfg->entries[idx].special_keys.size()) {
+                 strncat(line, "+", max_len - strlen(line) - 1);
+             }
+         }
+@@ -103,24 +105,27 @@ static void draw_separator(int sep_line) {
+ }
+ 
+ void screen_draw_shortcuts(const config* cfg) {
+-    shortcut_count = cfg->entry_count;
++    shortcut_count = static_cast<int>(cfg->entries.size());
+     if (shortcut_count > SHORTCUT_LINES) shortcut_count = SHORTCUT_LINES;
+ 
+     int term_width = getmaxx(stdscr);
+     int max_line_width = term_width - 4;
+ 
+-    for (int i = 0; i < shortcut_count; i++) {
++    int line_idx = 0;
++    for (const auto& entry : cfg->entries) {
++        if (line_idx >= shortcut_count) break;
+         char line[512];
+-        build_shortcut_line(cfg, i, line, sizeof(line));
++        build_shortcut_line(cfg, line_idx, line, sizeof(line));
+ 
+-        if ((int)strlen(line) > max_line_width) {
++        if (static_cast<int>(strlen(line)) > max_line_width) {
+             line[max_line_width] = '\0';
+             strcat(line, "...");
+         }
+ 
+-        move(i, 0);
++        move(line_idx, 0);
+         clrtoeol();
+         printw("%s", line);
++        line_idx++;
+     }
+ 
+     for (int i = shortcut_count; i < SHORTCUT_LINES; i++) {
+@@ -143,7 +148,7 @@ void screen_draw_vu_meter(float volume) {
+     int bar_width = term_width - 9;
+     if (bar_width < 1) bar_width = 1;
+ 
+-    int filled = (int)(volume * bar_width);
++    int filled = static_cast<int>(volume * bar_width);
+     if (filled > bar_width) filled = bar_width;
+ 
+     int vu_line = shortcut_count + 2;
+diff --git a/src/screen-manager.h b/src/screen-manager.h
+index a819636..0a7c9f9 100644
+--- a/src/screen-manager.h
++++ b/src/screen-manager.h
+@@ -2,10 +2,10 @@
+ #define SCREEN_MANAGER_H
+ 
+ #include <curses.h>
+-#include <pthread.h>
++#include <mutex>
+ #include "keyboard-sim.h"
+ 
+-extern pthread_mutex_t screen_mutex;
++extern std::mutex screen_mutex;
+ 
+ void screen_init();
+ void screen_cleanup();
+diff --git a/src/vu-thread.cpp b/src/vu-thread.cpp
+index 5e1699a..ca5e32e 100644
+--- a/src/vu-thread.cpp
++++ b/src/vu-thread.cpp
+@@ -1,29 +1,26 @@
+ #include "vu-thread.h"
+ #include "screen-manager.h"
++#include "globals.h"
+ #include <curses.h>
+-#include <pthread.h>
+-#include <unistd.h>
+-#include <atomic>
+-
+-extern float current_volume;
++#include <thread>
++#include <chrono>
+ 
+ static std::atomic<bool> vu_running{false};
+-static pthread_t vu_thread_id;
+-pthread_mutex_t screen_mutex = PTHREAD_MUTEX_INITIALIZER;
++static std::thread vu_thread;
+ 
+-static void* vu_thread_func(void*) {
++static void vu_thread_func() {
+     while (vu_running.load()) {
+-        pthread_mutex_lock(&screen_mutex);
+-        screen_draw_vu_meter(current_volume);
+-        pthread_mutex_unlock(&screen_mutex);
+-        usleep(50000);
++        {
++            std::lock_guard<std::mutex> lock(screen_mutex);
++            screen_draw_vu_meter(current_volume.load());
++        }
++        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+     }
+-    return nullptr;
+ }
+ 
+ void vu_thread_start() {
+     vu_running.store(true);
+-    pthread_create(&vu_thread_id, nullptr, vu_thread_func, nullptr);
++    vu_thread = std::thread(vu_thread_func);
+ }
+ 
+ void vu_thread_stop() {
+@@ -31,7 +28,7 @@ void vu_thread_stop() {
+ }
+ 
+ void vu_thread_wait() {
+-    if (vu_running.load()) {
+-        pthread_join(vu_thread_id, nullptr);
++    if (vu_thread.joinable()) {
++        vu_thread.join();
+     }
+ }

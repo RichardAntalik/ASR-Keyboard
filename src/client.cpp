@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
+#include <string>
 
 #include "json.hpp"
 #include "pulse-recording.h"
@@ -16,7 +18,7 @@ char* base64_encode(short* buffer, size_t size) {
     static char result[MAX_AUDIO_SIZE * 3];
     const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t i, j = 0;
-    unsigned char* bytes = (unsigned char*)buffer;
+    unsigned char* bytes = reinterpret_cast<unsigned char*>(buffer);
     for (i = 0; i < size * 2; i += 3) {
         unsigned char a = bytes[i], b = (i+1 < size*2) ? bytes[i+1] : 0, c = (i+2 < size*2) ? bytes[i+2] : 0;
         result[j++] = table[a >> 2];
@@ -29,13 +31,13 @@ char* base64_encode(short* buffer, size_t size) {
 }
 
 static size_t write_cb(void* ptr, size_t size, size_t nmemb, void* data) {
-    memcpy((char*)data + strlen((char*)data), (char*)ptr, size * nmemb);
+    memcpy(reinterpret_cast<char*>(data) + strlen(reinterpret_cast<char*>(data)), reinterpret_cast<char*>(ptr), size * nmemb);
     return size * nmemb;
 }
 
 static void build_request_json(char* encoded, const char* prompt, int request_id, Window target_window, char* out_json, size_t jlen) {
     snprintf(out_json, jlen, "{\"audio_bytes\": \"%s\", \"sample_rate\": 16000, \"prompt\": \"%s\", \"request_id\": %d, \"target_window\": %lu}",
-             encoded, prompt, request_id, (unsigned long)target_window);
+             encoded, prompt, request_id, static_cast<unsigned long>(target_window));
 }
 
 static long execute_curl_request(const char* json, std::atomic<bool>& abort_requested, char* resp) {
@@ -74,8 +76,8 @@ static long execute_curl_request(const char* json, std::atomic<bool>& abort_requ
     return http_code;
 }
 
-static void process_response(long http_code, char* resp, Window target_window, const char* const* special_keys,
-                              int special_key_count, std::atomic<bool>& abort_requested, int request_id) {
+static void process_response(long http_code, char* resp, Window target_window, const std::vector<std::string>& special_keys,
+                              std::atomic<bool>& abort_requested, int request_id) {
     if (debug_enabled) printf("Debug: HTTP response code=%ld, request_id=%d\n", http_code, request_id);
     fflush(stdout);
 
@@ -92,10 +94,10 @@ static void process_response(long http_code, char* resp, Window target_window, c
                 fflush(stdout);
 
                 if (!cancelled) {
-                    Window response_window = (Window)json_resp.value("target_window", (long)target_window);
-                    if (debug_enabled) printf("Debug: typing to window 0x%lx\n", (unsigned long)response_window);
+                    Window response_window = static_cast<Window>(json_resp.value("target_window", static_cast<long>(target_window)));
+                    if (debug_enabled) printf("Debug: typing to window 0x%lx\n", static_cast<unsigned long>(response_window));
                     fflush(stdout);
-                    type_text(transcript.c_str(), (const char* const*)special_keys, special_key_count, response_window, abort_requested, request_id);
+                    type_text(transcript.c_str(), special_keys, response_window, abort_requested, request_id);
                 } else {
                     if (debug_enabled) printf("Debug: request %d cancelled, skipping typing\n", request_id);
                 }
@@ -106,21 +108,18 @@ static void process_response(long http_code, char* resp, Window target_window, c
     }
 }
 
-void send_to_server(short* buffer, size_t size, const char* const* special_keys, int special_key_count,
-                     const char* prompt, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
+void send_to_server(short* buffer, size_t size, const std::vector<std::string>& special_keys,
+                      const char* prompt, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
     if (size == 0) return;
 
     char* encoded = base64_encode(buffer, size);
-    size_t jlen = (size * 3) + 2048;
-    char* json = (char*)malloc(jlen);
-    build_request_json(encoded, prompt, request_id, target_window, json, jlen);
+    std::string json((size * 3) + 2048, '\0');
+    build_request_json(encoded, prompt, request_id, target_window, &json[0], json.size());
 
     char resp[16384] = {0};
-    long http_code = execute_curl_request(json, abort_requested, resp);
+    long http_code = execute_curl_request(json.c_str(), abort_requested, resp);
 
     if (!abort_requested.load()) {
-        process_response(http_code, resp, target_window, special_keys, special_key_count, abort_requested, request_id);
+        process_response(http_code, resp, target_window, special_keys, abort_requested, request_id);
     }
-
-    free(json);
 }

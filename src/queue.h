@@ -7,11 +7,9 @@
 #include "keyboard-sim.h"
 
 struct queue_item {
-    short* buffer;
-    size_t size;
-    char** special_keys;
-    int special_key_count;
-    const char* prompt;
+    std::vector<short> buffer;
+    std::vector<std::string> special_keys;
+    std::string prompt;
     Window target_window;
     int request_id;
 };

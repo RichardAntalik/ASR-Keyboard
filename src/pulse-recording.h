@@ -3,22 +3,20 @@
 
 #include <pulse/pulseaudio.h>
 #include <atomic>
+#include <vector>
+#include <future>
 
-#define MAX_AUDIO_SIZE (1024 * 8192)
-#define MAX_SOURCE_NAME 256
+inline constexpr size_t MAX_AUDIO_SIZE = 1024 * 8192;
+inline constexpr size_t MAX_SOURCE_NAME = 256;
 
-extern std::atomic<bool> recording_active;
-extern char source_name[MAX_SOURCE_NAME];
-extern float current_volume;
+extern std::string source_name;
 
 struct record_state {
-    short* buffer;
-    size_t total;
-    pa_volume_t* last_volume;
-    bool volume_valid;
+    std::vector<short> buffer;
+    size_t total = 0;
 };
 
 void run_pa_query(int index);
-void* record_thread(void* arg);
+void record_thread(std::promise<record_state*>* prom);
 
 #endif

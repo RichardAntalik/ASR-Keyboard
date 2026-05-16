@@ -5,13 +5,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
-#include <pthread.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <atomic>
 #include <csignal>
+#include <thread>
+#include <mutex>
+#include <future>
+#include <memory>
+#include <vector>
+#include <string>
 
 #include "json.hpp"
 #include "config-parsing.h"
@@ -22,25 +27,24 @@
 #include "screen-manager.h"
 #include "request-storage.h"
 #include "vu-thread.h"
+#include "globals.h"
 
 std::atomic<bool> recording_active{false};
 std::atomic<bool> abort_requested{false};
 std::atomic<int> held_key_count{0};
 bool debug_enabled{false};
-char* config_path = nullptr;
+std::string config_path_str;
 
 thread_safe_queue transcription_queue;
 
 static config* g_cfg_for_resize = nullptr;
+static volatile sig_atomic_t resize_pending = false;
 
+extern std::mutex screen_mutex;
 extern void screen_handle_resize(const config* cfg);
 
 static void sigwinch_handler(int) {
-    if (g_cfg_for_resize) {
-        pthread_mutex_lock(&screen_mutex);
-        screen_handle_resize(g_cfg_for_resize);
-        pthread_mutex_unlock(&screen_mutex);
-    }
+    resize_pending = 1;
 }
 
 static void parse_args(int argc, char* argv[], bool* remember_window) {
@@ -57,7 +61,7 @@ static void parse_args(int argc, char* argv[], bool* remember_window) {
             debug_enabled = true;
         }
         if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
-            config_path = strdup(argv[i+1]);
+            config_path_str = argv[i+1];
             i++;
         }
         if (strcmp(argv[i], "-a") == 0) {
@@ -77,29 +81,22 @@ static void parse_args(int argc, char* argv[], bool* remember_window) {
     }
 }
 
-static void resolve_config_path() {
-    if (config_path != nullptr) return;
+static const char* resolve_config_path() {
+    if (!config_path_str.empty()) return config_path_str.c_str();
 
     const char* xdg_config = getenv("XDG_CONFIG_HOME");
     const char* home_dir = getenv("HOME");
 
     if (xdg_config) {
-        char* new_path = (char*)malloc(strlen(xdg_config) + 20);
-        snprintf(new_path, strlen(xdg_config) + 20, "%s/asr-kb/config.json", xdg_config);
-        config_path = new_path;
+        config_path_str = std::string(xdg_config) + "/asr-kb/config.json";
     } else if (home_dir) {
-        char* new_path = (char*)malloc(strlen(home_dir) + 20);
-        snprintf(new_path, strlen(home_dir) + 20, "%s/.config/asr-kb/config.json", home_dir);
-        config_path = new_path;
+        config_path_str = std::string(home_dir) + "/.config/asr-kb/config.json";
     } else {
         char cwd[256];
         if (!getcwd(cwd, sizeof(cwd))) exit(1);
-        config_path = strdup(cwd);
-        char* new_path = (char*)malloc(strlen(config_path) + 20);
-        snprintf(new_path, strlen(config_path) + 20, "%s/.config/asr-kb/config.json", config_path);
-        free(config_path);
-        config_path = new_path;
+        config_path_str = std::string(cwd) + "/.config/asr-kb/config.json";
     }
+    return config_path_str.c_str();
 }
 
 static int init_x11(Display** out_dpy) {
@@ -123,13 +120,14 @@ static int init_x11(Display** out_dpy) {
 }
 
 static config* load_or_create_config() {
-    config* cfg = load_config(config_path);
+    const char* path = resolve_config_path();
+    config* cfg = load_config(path);
 
     if (cfg == nullptr) {
         char response = getchar();
         if (response == 'y' || response == 'Y') {
-            if (create_default_config(config_path)) {
-                cfg = load_config(config_path);
+            if (create_default_config(path)) {
+                cfg = load_config(path);
             } else {
                 return nullptr;
             }
@@ -150,58 +148,41 @@ static void init_screen(config* cfg) {
     screen_draw_vu_meter(0.0f);
 }
 
-static void* worker_thread_func(void* arg) {
+static void worker_thread_func() {
     while (true) {
         queue_item item = transcription_queue.pop();
-        if (item.buffer == nullptr) break;
+        if (item.buffer.empty()) break;
 
         if (g_request_storage.is_cancelled(item.request_id)) {
             if (debug_enabled) printf("Debug: worker request %d cancelled, skipping\n", item.request_id);
-            free(item.buffer);
-            for (int k = 0; k < item.special_key_count; k++) {
-                free(item.special_keys[k]);
-            }
-            free(item.special_keys);
             g_request_storage.remove(item.request_id);
             continue;
         }
 
-        if (debug_enabled) printf("Debug: worker processing request %d, %zu samples\n", item.request_id, item.size);
-        send_to_server(item.buffer, item.size, (const char* const*)item.special_keys, item.special_key_count, item.prompt, item.target_window, abort_requested, item.request_id);
+        if (debug_enabled) printf("Debug: worker processing request %d, %zu samples\n", item.request_id, item.buffer.size());
+        send_to_server(item.buffer.data(), item.buffer.size(), item.special_keys, item.prompt.c_str(), item.target_window, abort_requested, item.request_id);
 
-        free(item.buffer);
-        for (int k = 0; k < item.special_key_count; k++) {
-            free(item.special_keys[k]);
-        }
-        free(item.special_keys);
         g_request_storage.remove(item.request_id);
     }
-    return nullptr;
-}
-
-static void setup_worker_thread(pthread_t* worker_thread) {
-    pthread_create(worker_thread, NULL, worker_thread_func, NULL);
 }
 
 typedef struct {
     bool keycode_state[512];
-    char** active_special_keys;
-    int active_special_key_count;
+    std::vector<std::string> active_special_keys;
     int active_entry;
     Window target_window;
-    pthread_t thread_id;
+    std::thread recording_thread;
+    std::unique_ptr<std::promise<record_state*>> recording_promise;
     config* cfg;
     bool remember_window;
     Display* display;
     int xi_opcode;
-    pthread_t worker_thread;
+    std::thread worker_thread;
     int raw_keycode;
 } app_state;
 
 static void init_app_state(app_state* state) {
     memset(state->keycode_state, 0, sizeof(state->keycode_state));
-    state->active_special_keys = nullptr;
-    state->active_special_key_count = 0;
     state->active_entry = -1;
     state->target_window = None;
 }
@@ -221,16 +202,17 @@ static void handle_escape(app_state* state, XIRawEvent* raw) {
 
 static void draw_vu_if_recording() {
     if (recording_active.load()) {
-        screen_draw_vu_meter(current_volume);
+        screen_draw_vu_meter(current_volume.load());
         screen_refresh();
     }
 }
 
 static bool check_hotkey_match(app_state* state) {
-    for (int i = 0; i < state->cfg->entry_count; i++) {
+    int idx = 0;
+    for (const auto& entry : state->cfg->entries) {
         bool all_pressed = true;
-        for (int j = 0; j < state->cfg->entries[i].key_count; j++) {
-            KeySym target_keysym = config_key_to_keysym(state->cfg->entries[i].keys[j]);
+        for (const auto& key : entry.keys) {
+            KeySym target_keysym = config_key_to_keysym(key.c_str());
             KeyCode target_code = XKeysymToKeycode(state->display, target_keysym);
 
             if (target_code == 0 || target_code >= 512 || !state->keycode_state[target_code]) {
@@ -242,24 +224,20 @@ static bool check_hotkey_match(app_state* state) {
         if (all_pressed) {
             recording_active.store(true);
             vu_thread_start();
-            state->active_special_key_count = state->cfg->entries[i].special_key_count;
-            if (state->active_special_key_count > 0) {
-                state->active_special_keys = (char**)malloc(state->active_special_key_count * sizeof(char*));
-                for (int j = 0; j < state->active_special_key_count; j++) {
-                    state->active_special_keys[j] = strdup(state->cfg->entries[i].special_keys[j]);
-                }
-            }
-            state->active_entry = i;
+            state->active_special_keys = entry.special_keys;
+            state->active_entry = idx;
             if (state->remember_window) {
                 state->target_window = None;
             } else {
                 state->target_window = get_active_window(state->display);
             }
 
-            if (debug_enabled) printf("Debug: all keys pressed! starting recording, target=0x%lx\n", (unsigned long)state->target_window);
-            pthread_create(&state->thread_id, NULL, record_thread, NULL);
+            if (debug_enabled) printf("Debug: all keys pressed! starting recording, target=0x%lx\n", static_cast<unsigned long>(state->target_window));
+            state->recording_promise = std::make_unique<std::promise<record_state*>>();
+            state->recording_thread = std::thread(record_thread, state->recording_promise.get());
             return true;
         }
+        idx++;
     }
     return false;
 }
@@ -276,8 +254,8 @@ static void handle_key_press(app_state* state, XIRawEvent* raw) {
 }
 
 static bool is_active_key_released(app_state* state, int keycode) {
-    for (int j = 0; j < state->cfg->entries[state->active_entry].key_count; j++) {
-        KeySym target_keysym = config_key_to_keysym(state->cfg->entries[state->active_entry].keys[j]);
+    for (const auto& key : state->cfg->entries[state->active_entry].keys) {
+        KeySym target_keysym = config_key_to_keysym(key.c_str());
         KeyCode target_code = XKeysymToKeycode(state->display, target_keysym);
         if (target_code == keycode) {
             return true;
@@ -288,39 +266,33 @@ static bool is_active_key_released(app_state* state, int keycode) {
 
 static void queue_transcription(app_state* state, struct record_state* res) {
     queue_item item;
-    item.buffer = res->buffer;
-    item.size = res->total;
-    item.special_key_count = state->active_special_key_count;
-    item.special_keys = (char**)malloc(state->active_special_key_count * sizeof(char*));
-    for(int k=0; k<state->active_special_key_count; k++) {
-        item.special_keys[k] = strdup(state->active_special_keys[k]);
-    }
+    item.buffer.assign(res->buffer.begin(), res->buffer.end());
+    item.special_keys = state->active_special_keys;
     item.prompt = state->cfg->entries[state->active_entry].prompt;
     item.target_window = state->target_window;
     item.request_id = g_request_storage.add_request();
 
     transcription_queue.push(item);
 
-    free(res);
+    delete res;
 }
 
 static void handle_key_release(app_state* state, struct record_state* res) {
-    pthread_mutex_lock(&screen_mutex);
-    screen_print(0, "Finished. Captured %zu samples.", res->total);
-    pthread_mutex_unlock(&screen_mutex);
+    {
+        std::lock_guard<std::mutex> lock(screen_mutex);
+        screen_print(0, "Finished. Captured %zu samples.", res->total);
+    }
 
     queue_transcription(state, res);
 
-    free(state->active_special_keys);
-    state->active_special_keys = nullptr;
-    state->active_special_key_count = 0;
+    state->active_special_keys.clear();
     state->active_entry = -1;
 }
 
 static void process_xi_event(app_state* state, Display* dpy, XGenericEventCookie* cookie) {
     if (cookie->extension != state->xi_opcode || !XGetEventData(dpy, cookie)) return;
 
-    XIRawEvent* raw = (XIRawEvent*)cookie->data;
+    XIRawEvent* raw = reinterpret_cast<XIRawEvent*>(cookie->data);
     int keycode = raw->detail;
 
     if (cookie->evtype == XI_RawKeyPress) {
@@ -333,16 +305,17 @@ static void process_xi_event(app_state* state, Display* dpy, XGenericEventCookie
             if (is_active_key_released(state, keycode)) {
                 state->raw_keycode = keycode;
                 recording_active.store(false);
-                current_volume = 0.0f;
-                pthread_mutex_lock(&screen_mutex);
-                screen_draw_vu_meter(0.0f);
-                pthread_mutex_unlock(&screen_mutex);
+                current_volume.store(0.0f);
+                {
+                    std::lock_guard<std::mutex> lock(screen_mutex);
+                    screen_draw_vu_meter(0.0f);
+                }
                 vu_thread_stop();
                 vu_thread_wait();
-                void* ret;
-                pthread_join(state->thread_id, &ret);
-                struct record_state* res = (struct record_state*)ret;
+                auto future = state->recording_promise->get_future();
+                record_state* res = future.get();
                 handle_key_release(state, res);
+                state->recording_thread.join();
             }
         }
     }
@@ -352,7 +325,6 @@ static void process_xi_event(app_state* state, Display* dpy, XGenericEventCookie
 int main(int argc, char* argv[]) {
     bool remember_window = false;
     parse_args(argc, argv, &remember_window);
-    resolve_config_path();
 
     Display* dpy = nullptr;
     int xi_opcode = init_x11(&dpy);
@@ -369,20 +341,27 @@ int main(int argc, char* argv[]) {
     state.display = dpy;
     state.xi_opcode = xi_opcode;
 
-    setup_worker_thread(&state.worker_thread);
+    state.worker_thread = std::thread(worker_thread_func);
 
     while (1) {
         XEvent ev;
         XNextEvent(dpy, &ev);
         draw_vu_if_recording();
+        if (resize_pending) {
+            resize_pending = 0;
+            if (g_cfg_for_resize) {
+                std::lock_guard<std::mutex> lock(screen_mutex);
+                screen_handle_resize(g_cfg_for_resize);
+            }
+        }
         if (ev.type == GenericEvent && ev.xcookie.extension == state.xi_opcode) {
             process_xi_event(&state, dpy, &ev.xcookie);
         }
     }
 
     abort_requested.store(true);
-    transcription_queue.push(queue_item{nullptr, 0, nullptr, 0, nullptr, None, 0});
-    pthread_join(state.worker_thread, nullptr);
+    transcription_queue.push(queue_item{});
+    state.worker_thread.join();
 
     screen_cleanup();
     XCloseDisplay(dpy);

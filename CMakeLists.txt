@@ -44,8 +44,6 @@ target_link_libraries(asr-kb
     ${XTST_LIB} 
     ${PULSE_LIB} 
     ${NCURSES_LIB}
-    m
-    pthread
 )
 if(ENABLE_ASAN)
     target_link_libraries(asr-kb asan)

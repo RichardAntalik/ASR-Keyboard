@@ -1,4 +1,5 @@
 #include "keyboard-sim.h"
+#include "globals.h"
 #include <X11/Xatom.h>
 #include <X11/keysym.h>
 #include <X11/extensions/XTest.h>
@@ -6,8 +7,6 @@
 #include <stdio.h>
 #include <time.h>
 
-extern bool debug_enabled;
-extern std::atomic<int> held_key_count;
 #include "request-storage.h"
 
 Window get_active_window(Display* dpy) {
@@ -58,7 +57,7 @@ static void wait_for_keys_released() {
 }
 
 static Display* open_display_and_focus(const char* text, Window target_window, Window* out_prev_focus) {
-    if (debug_enabled) printf("Debug: type_text text='%s', special_key_count=%d, target=0x%lx\n", text, 0, (unsigned long)target_window);
+    if (debug_enabled) printf("Debug: type_text text='%s', target=0x%lx\n", text, static_cast<unsigned long>(target_window));
 
     wait_for_keys_released();
 
@@ -89,7 +88,7 @@ static Display* open_display_and_focus(const char* text, Window target_window, W
         struct timespec ts = {0, 50000000L};
         nanosleep(&ts, NULL);
 
-        if (debug_enabled) printf("Debug: type_text focused window 0x%lx (was 0x%lx)\n", (unsigned long)target_window, (unsigned long)*out_prev_focus);
+        if (debug_enabled) printf("Debug: type_text focused window 0x%lx (was 0x%lx)\n", static_cast<unsigned long>(target_window), static_cast<unsigned long>(*out_prev_focus));
     }
 
     return dpy;
@@ -100,7 +99,7 @@ static void type_char(Display* dpy, char c) {
         char buf[2] = {c, 0};
         simulate_key(dpy, buf, false);
     } else if (c >= 'A' && c <= 'Z') {
-        char buf[2] = {(char)(c + 32), 0};
+        char buf[2] = {static_cast<char>(c + 32), 0};
         simulate_key(dpy, buf, true);
     } else if (c >= '0' && c <= '9') {
         char buf[2] = {c, 0};
@@ -142,21 +141,21 @@ static void type_characters(Display* dpy, const char* text, std::atomic<bool>& a
     }
 }
 
-static void type_special_keys(Display* dpy, const char* const* special_keys, int special_key_count, std::atomic<bool>& abort_requested, int request_id) {
-    if (debug_enabled) printf("Debug: type_text special_keys count=%d\n", special_key_count);
+static void type_special_keys(Display* dpy, const std::vector<std::string>& special_keys, std::atomic<bool>& abort_requested, int request_id) {
+    if (debug_enabled) printf("Debug: type_text special_keys count=%zu\n", special_keys.size());
 
-    for (int i = 0; i < special_key_count; i++) {
+    for (const auto& key : special_keys) {
         if (abort_requested.load()) break;
         if (request_id > 0 && g_request_storage.is_cancelled(request_id)) break;
 
-        if (strcmp(special_keys[i], "enter") == 0 || strcmp(special_keys[i], "Return") == 0) {
+        if (key == "enter" || key == "Return") {
             simulate_key(dpy, "Return", false);
-        } else if (strcmp(special_keys[i], "space") == 0 || strcmp(special_keys[i], " ") == 0) {
+        } else if (key == "space" || key == " ") {
             simulate_key(dpy, "space", false);
-        } else if (strcmp(special_keys[i], "tab") == 0 || strcmp(special_keys[i], "Tab") == 0) {
+        } else if (key == "tab" || key == "Tab") {
             simulate_key(dpy, "Tab", false);
         } else {
-            simulate_key(dpy, special_keys[i], false);
+            simulate_key(dpy, key.c_str(), false);
         }
     }
 }
@@ -170,14 +169,14 @@ static void cleanup_type_text(Display* dpy, Window target_window, Window prev_fo
     if (target_window != None && prev_focus != None) {
         XSetInputFocus(dpy, prev_focus, RevertToParent, CurrentTime);
         XFlush(dpy);
-        if (debug_enabled) printf("Debug: type_text restored focus to 0x%lx\n", (unsigned long)prev_focus);
+        if (debug_enabled) printf("Debug: type_text restored focus to 0x%lx\n", static_cast<unsigned long>(prev_focus));
     }
 
     if (debug_enabled) printf("Debug: type_text closing display\n");
     XCloseDisplay(dpy);
 }
 
-void type_text(const char* text, const char* const* special_keys, int special_key_count, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
+void type_text(const char* text, const std::vector<std::string>& special_keys, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
     if (!text) return;
 
     Window prev_focus = None;
@@ -188,16 +187,11 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
 
     if (abort_requested.load()) {
         if (debug_enabled) printf("Debug: type_text aborted before special keys\n");
-        goto cleanup;
-    }
-
-    if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
+    } else if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
         if (debug_enabled) printf("Debug: type_text request %d cancelled before special keys\n", request_id);
-        goto cleanup;
+    } else {
+        type_special_keys(dpy, special_keys, abort_requested, request_id);
     }
 
-    type_special_keys(dpy, special_keys, special_key_count, abort_requested, request_id);
-
-cleanup:
     cleanup_type_text(dpy, target_window, prev_focus);
 }

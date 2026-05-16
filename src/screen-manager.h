@@ -2,10 +2,10 @@
 #define SCREEN_MANAGER_H
 
 #include <curses.h>
-#include <pthread.h>
+#include <mutex>
 #include "keyboard-sim.h"
 
-extern pthread_mutex_t screen_mutex;
+extern std::mutex screen_mutex;
 
 void screen_init();
 void screen_cleanup();
