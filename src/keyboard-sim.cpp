@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "request-storage.h"
+#include "screen-manager.h"
 
 Window get_active_window(Display* dpy) {
     Atom net_active = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
@@ -57,18 +58,17 @@ static void wait_for_keys_released() {
 }
 
 static Display* open_display_and_focus(const char* text, Window target_window, Window* out_prev_focus) {
-    if (debug_enabled) printf("Debug: type_text text='%s', target=0x%lx\n", text, static_cast<unsigned long>(target_window));
+    if (debug_enabled) screen_debug("type_text text='%s', target=0x%lx", text, static_cast<unsigned long>(target_window));
 
     wait_for_keys_released();
 
     Display* dpy = XOpenDisplay(NULL);
     if (!dpy) {
-        if (debug_enabled) printf("Debug: type_text failed to open display\n");
-        fflush(stdout);
+        if (debug_enabled) screen_debug("type_text failed to open display");
         return nullptr;
     }
 
-    if (debug_enabled) printf("Debug: type_text opened display\n");
+    if (debug_enabled) screen_debug("type_text opened display");
 
     *out_prev_focus = None;
     if (target_window != None) {
@@ -88,7 +88,7 @@ static Display* open_display_and_focus(const char* text, Window target_window, W
         struct timespec ts = {0, 50000000L};
         nanosleep(&ts, NULL);
 
-        if (debug_enabled) printf("Debug: type_text focused window 0x%lx (was 0x%lx)\n", static_cast<unsigned long>(target_window), static_cast<unsigned long>(*out_prev_focus));
+        if (debug_enabled) screen_debug("type_text focused window 0x%lx (was 0x%lx)", static_cast<unsigned long>(target_window), static_cast<unsigned long>(*out_prev_focus));
     }
 
     return dpy;
@@ -130,11 +130,11 @@ static void type_char(Display* dpy, char c) {
 static void type_characters(Display* dpy, const char* text, std::atomic<bool>& abort_requested, int request_id) {
     for (const char* p = text; *p; p++) {
         if (abort_requested.load()) {
-            if (debug_enabled) printf("Debug: type_text aborted during character loop\n");
+            if (debug_enabled) screen_debug("type_text aborted during character loop");
             break;
         }
         if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
-            if (debug_enabled) printf("Debug: type_text request %d cancelled\n", request_id);
+            if (debug_enabled) screen_debug("type_text request %d cancelled", request_id);
             break;
         }
         type_char(dpy, *p);
@@ -142,7 +142,7 @@ static void type_characters(Display* dpy, const char* text, std::atomic<bool>& a
 }
 
 static void type_special_keys(Display* dpy, const std::vector<std::string>& special_keys, std::atomic<bool>& abort_requested, int request_id) {
-    if (debug_enabled) printf("Debug: type_text special_keys count=%zu\n", special_keys.size());
+    if (debug_enabled) screen_debug("type_text special_keys count=%zu", special_keys.size());
 
     for (const auto& key : special_keys) {
         if (abort_requested.load()) break;
@@ -161,7 +161,7 @@ static void type_special_keys(Display* dpy, const std::vector<std::string>& spec
 }
 
 static void cleanup_type_text(Display* dpy, Window target_window, Window prev_focus) {
-    if (debug_enabled) printf("Debug: type_text flushing\n");
+    if (debug_enabled) screen_debug("type_text flushing");
     XFlush(dpy);
     struct timespec ts = {0, 10000000L};
     nanosleep(&ts, NULL);
@@ -169,10 +169,10 @@ static void cleanup_type_text(Display* dpy, Window target_window, Window prev_fo
     if (target_window != None && prev_focus != None) {
         XSetInputFocus(dpy, prev_focus, RevertToParent, CurrentTime);
         XFlush(dpy);
-        if (debug_enabled) printf("Debug: type_text restored focus to 0x%lx\n", static_cast<unsigned long>(prev_focus));
+        if (debug_enabled) screen_debug("type_text restored focus to 0x%lx", static_cast<unsigned long>(prev_focus));
     }
 
-    if (debug_enabled) printf("Debug: type_text closing display\n");
+    if (debug_enabled) screen_debug("type_text closing display");
     XCloseDisplay(dpy);
 }
 
@@ -186,9 +186,9 @@ void type_text(const char* text, const std::vector<std::string>& special_keys, W
     type_characters(dpy, text, abort_requested, request_id);
 
     if (abort_requested.load()) {
-        if (debug_enabled) printf("Debug: type_text aborted before special keys\n");
+        if (debug_enabled) screen_debug("type_text aborted before special keys");
     } else if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
-        if (debug_enabled) printf("Debug: type_text request %d cancelled before special keys\n", request_id);
+        if (debug_enabled) screen_debug("type_text request %d cancelled before special keys", request_id);
     } else {
         type_special_keys(dpy, special_keys, abort_requested, request_id);
     }

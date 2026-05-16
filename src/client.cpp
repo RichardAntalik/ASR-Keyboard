@@ -11,6 +11,7 @@
 #include "pulse-recording.h"
 #include "keyboard-sim.h"
 #include "request-storage.h"
+#include "screen-manager.h"
 
 extern bool debug_enabled;
 
@@ -78,28 +79,24 @@ static long execute_curl_request(const char* json, std::atomic<bool>& abort_requ
 
 static void process_response(long http_code, char* resp, Window target_window, const std::vector<std::string>& special_keys,
                               std::atomic<bool>& abort_requested, int request_id) {
-    if (debug_enabled) printf("Debug: HTTP response code=%ld, request_id=%d\n", http_code, request_id);
-    fflush(stdout);
+    if (debug_enabled) screen_debug("HTTP response code=%ld, request_id=%d", http_code, request_id);
 
     if (http_code == 200) {
         try {
             nlohmann::json json_resp = nlohmann::json::parse(resp);
             std::string transcript = json_resp.value("transcript", "");
-            if (debug_enabled) printf("Debug: transcript='%s', request_id=%d\n", transcript.c_str(), request_id);
-            fflush(stdout);
+            if (debug_enabled) screen_debug("transcript='%s', request_id=%d", transcript.c_str(), request_id);
 
             if (!transcript.empty()) {
                 bool cancelled = g_request_storage.is_cancelled(request_id);
-                if (debug_enabled) printf("Debug: is_cancelled(%d)=%d\n", request_id, cancelled);
-                fflush(stdout);
+                if (debug_enabled) screen_debug("is_cancelled(%d)=%d", request_id, cancelled);
 
                 if (!cancelled) {
                     Window response_window = static_cast<Window>(json_resp.value("target_window", static_cast<long>(target_window)));
-                    if (debug_enabled) printf("Debug: typing to window 0x%lx\n", static_cast<unsigned long>(response_window));
-                    fflush(stdout);
+                    if (debug_enabled) screen_debug("typing to window 0x%lx", static_cast<unsigned long>(response_window));
                     type_text(transcript.c_str(), special_keys, response_window, abort_requested, request_id);
                 } else {
-                    if (debug_enabled) printf("Debug: request %d cancelled, skipping typing\n", request_id);
+                    if (debug_enabled) screen_debug("request %d cancelled, skipping typing", request_id);
                 }
             }
         } catch (...) {

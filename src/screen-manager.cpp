@@ -3,7 +3,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string>
-#include <array>
+#include <deque>
 #include <cstring>
 #include <pulse/pulseaudio.h>
 #include <algorithm>
@@ -16,34 +16,32 @@ inline constexpr char const* VU_SUFFIX = "]";
 inline constexpr char const* VU_CHARS = ".:=#";
 inline constexpr int SHORTCUT_LINES = 5;
 inline constexpr char SEP_CHAR = '_';
-inline constexpr int OUTPUT_LINES = 8;
 
 static int shortcut_count = 0;
-static std::array<std::string, OUTPUT_LINES> output_buf;
-static int output_count = 0;
+static std::deque<std::string> output_buf;
 
 static void output_shift_down(const char* new_line) {
-    if (output_count < OUTPUT_LINES) {
-        output_buf[output_count] = "";
-        output_count++;
+    output_buf.push_front(new_line);
+    while ((int)output_buf.size() > LINES) {
+        output_buf.pop_back();
     }
-    std::rotate(output_buf.rbegin(), output_buf.rbegin() + 1, output_buf.rend());
-    output_buf[0] = new_line;
 }
 
 static void output_render() {
     int start_line = shortcut_count + 4;
-    for (int i = 0; i < output_count; i++) {
-        int actual_line = start_line + i;
-        if (actual_line >= LINES) break;
-        move(actual_line, 0);
+    int total_lines = LINES - start_line;
+    if (total_lines < 0) total_lines = 0;
+    int render_count = output_buf.size();
+    if (render_count > total_lines) render_count = total_lines;
+    auto it = output_buf.begin();
+    for (int i = 0; i < render_count; i++) {
+        move(start_line + i, 0);
         clrtoeol();
-        printw("%s", output_buf[i].c_str());
+        printw("%s", it->c_str());
+        it++;
     }
-    for (int i = output_count; i < OUTPUT_LINES; i++) {
-        int actual_line = start_line + i;
-        if (actual_line >= LINES) break;
-        move(actual_line, 0);
+    for (int i = render_count; i < total_lines; i++) {
+        move(start_line + i, 0);
         clrtoeol();
     }
 }
@@ -208,6 +206,20 @@ void screen_print(int line, const char* fmt, ...) {
     refresh();
 }
 
+void screen_debug(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    std::lock_guard<std::mutex> lock(screen_mutex);
+    output_shift_down(buf);
+    output_render();
+    refresh();
+}
+
 void screen_refresh() {
     refresh();
 }
@@ -216,8 +228,6 @@ void screen_handle_resize(const config* cfg) {
     endwin();
     resize_term(0, 0);
     refresh();
-    output_count = 0;
-    for (auto& line : output_buf) line.clear();
     screen_draw_shortcuts(cfg);
     screen_draw_vu_meter(0.0f);
     refresh();

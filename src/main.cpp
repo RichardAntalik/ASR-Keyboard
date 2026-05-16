@@ -154,12 +154,12 @@ static void worker_thread_func() {
         if (item.buffer.empty()) break;
 
         if (g_request_storage.is_cancelled(item.request_id)) {
-            if (debug_enabled) printf("Debug: worker request %d cancelled, skipping\n", item.request_id);
+            if (debug_enabled) screen_debug("worker request %d cancelled, skipping", item.request_id);
             g_request_storage.remove(item.request_id);
             continue;
         }
 
-        if (debug_enabled) printf("Debug: worker processing request %d, %zu samples\n", item.request_id, item.buffer.size());
+        if (debug_enabled) screen_debug("worker processing request %d, %zu samples", item.request_id, item.buffer.size());
         send_to_server(item.buffer.data(), item.buffer.size(), item.special_keys, item.prompt.c_str(), item.target_window, abort_requested, item.request_id);
 
         g_request_storage.remove(item.request_id);
@@ -190,13 +190,13 @@ static void init_app_state(app_state* state) {
 static void handle_escape(app_state* state, XIRawEvent* raw) {
     int keycode = XKeysymToKeycode(state->display, XK_Escape);
     if (raw->detail == keycode) {
-        if (debug_enabled) printf("Debug: ESC key detected (keycode=%d), recording_active=%d, pending_requests=%zu\n", keycode, recording_active.load(), g_request_storage.pending_count()); fflush(stdout);
+        if (debug_enabled) screen_debug("ESC key detected (keycode=%d), recording_active=%d, pending_requests=%zu", keycode, recording_active.load(), g_request_storage.pending_count());
         if (recording_active.load()) {
-            if (debug_enabled) printf("Debug: ESC setting recording_active=false\n");
+            if (debug_enabled) screen_debug("ESC setting recording_active=false");
             recording_active.store(false);
         }
         g_request_storage.cancel_all();
-        if (debug_enabled) printf("Debug: ESC cancel_all() done\n"); fflush(stdout);
+        if (debug_enabled) screen_debug("ESC cancel_all() done");
     }
 }
 
@@ -232,7 +232,7 @@ static bool check_hotkey_match(app_state* state) {
                 state->target_window = get_active_window(state->display);
             }
 
-            if (debug_enabled) printf("Debug: all keys pressed! starting recording, target=0x%lx\n", static_cast<unsigned long>(state->target_window));
+            if (debug_enabled) screen_debug("all keys pressed! starting recording, target=0x%lx", static_cast<unsigned long>(state->target_window));
             state->recording_promise = std::make_unique<std::promise<record_state*>>();
             state->recording_thread = std::thread(record_thread, state->recording_promise.get());
             return true;
