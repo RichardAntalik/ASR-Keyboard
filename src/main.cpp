@@ -18,7 +18,7 @@
 #include <vector>
 #include <string>
 
-#include "json.hpp"
+#include "extern/json.hpp"
 #include "config-parsing.h"
 #include "pulse-recording.h"
 #include "keyboard-sim.h"

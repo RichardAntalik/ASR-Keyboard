@@ -32,7 +32,7 @@ find_library(PULSE_LIB pulse REQUIRED)
 
 # 2. Define the executable
 add_executable(asr-kb src/main.cpp src/pulse-recording.cpp src/keyboard-sim.cpp src/config-parsing.cpp src/client.cpp src/queue.cpp src/request-storage.cpp src/screen-manager.cpp src/vu-thread.cpp)
-target_include_directories(asr-kb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(asr-kb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/extern)
 
 # 3. Link everything together
 target_link_libraries(asr-kb 
