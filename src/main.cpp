@@ -94,6 +94,7 @@ int main(int argc, char* argv[]) {
             remember_window = true;
         }
         if (strcmp(argv[i], "-h") == 0) {
+            printf("%s — hold a hotkey to record audio, release to transcribe speech and type the result into your active window.\n", argv[0]);
             printf("Usage: %s [-l] [-i <index>] [-d] [-c <config.json>] [-a] [-h]\n", argv[0]);
             printf("  -l    list audio sources\n");
             printf("  -i <index> select audio source by index\n");
