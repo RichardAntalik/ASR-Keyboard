@@ -6,8 +6,8 @@
 
 bool create_default_config(const char* path) {
     const char* default_content = R"([
-  { "shortcut": ["ctrl", "super", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": "null" },
-  { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": "enter" }
+  { "shortcut": ["ctrl", "super", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": ["null"] },
+  { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": ["enter"] }
 ])";
 
     FILE* fp = fopen(path, "w");
@@ -56,12 +56,8 @@ static bool parse_entry(nlohmann::json& entry, shortcut_entry& parsed) {
     parsed.prompt = entry["prompt"].get<std::string>();
 
     if (entry.contains("special_key")) {
-        if (entry["special_key"].is_array()) {
-            for (auto& sk : entry["special_key"]) {
-                parsed.special_keys.push_back(sk.get<std::string>());
-            }
-        } else {
-            parsed.special_keys.push_back(entry["special_key"].get<std::string>());
+        for (auto& sk : entry["special_key"]) {
+            parsed.special_keys.push_back(sk.get<std::string>());
         }
     }
 
