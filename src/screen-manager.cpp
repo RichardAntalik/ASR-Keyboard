@@ -59,6 +59,49 @@ void screen_cleanup() {
     endwin();
 }
 
+static void build_shortcut_line(const config* cfg, int idx, char* line, int max_len) {
+    line[0] = '\0';
+    strncat(line, "  Shortcut: ", max_len - strlen(line) - 1);
+    strncat(line, cfg->entries[idx].keys[0], max_len - strlen(line) - 1);
+
+    for (int j = 1; j < cfg->entries[idx].key_count; j++) {
+        strncat(line, "+", max_len - strlen(line) - 1);
+        strncat(line, cfg->entries[idx].keys[j], max_len - strlen(line) - 1);
+    }
+
+    strncat(line, " -> prompt: ", max_len - strlen(line) - 1);
+    strncat(line, cfg->entries[idx].prompt, max_len - strlen(line) - 1);
+
+    if (cfg->entries[idx].special_key_count > 0) {
+        strncat(line, ", special: ", max_len - strlen(line) - 1);
+        for (int j = 0; j < cfg->entries[idx].special_key_count; j++) {
+            strncat(line, cfg->entries[idx].special_keys[j], max_len - strlen(line) - 1);
+            if (j + 1 < cfg->entries[idx].special_key_count) {
+                strncat(line, "+", max_len - strlen(line) - 1);
+            }
+        }
+    }
+}
+
+static void draw_separator(int sep_line) {
+    int term_w = getmaxx(stdscr);
+    int sep_len = term_w > 250 ? 250 : term_w;
+
+    char sep[256];
+    for (int i = 0; i < sep_len; i++) {
+        sep[i] = SEP_CHAR;
+    }
+    sep[sep_len] = '\0';
+
+    move(sep_line, 0);
+    printw("%s", sep);
+
+    move(sep_line + 1, 0);
+    clrtoeol();
+    move(sep_line + 2, 0);
+    clrtoeol();
+}
+
 void screen_draw_shortcuts(const config* cfg) {
     shortcut_count = cfg->entry_count;
     if (shortcut_count > SHORTCUT_LINES) shortcut_count = SHORTCUT_LINES;
@@ -67,24 +110,8 @@ void screen_draw_shortcuts(const config* cfg) {
     int max_line_width = term_width - 4;
 
     for (int i = 0; i < shortcut_count; i++) {
-        char line[512] = "";
-        strncat(line, "  Shortcut: ", sizeof(line) - strlen(line) - 1);
-        strncat(line, cfg->entries[i].keys[0], sizeof(line) - strlen(line) - 1);
-        for (int j = 1; j < cfg->entries[i].key_count; j++) {
-            strncat(line, "+", sizeof(line) - strlen(line) - 1);
-            strncat(line, cfg->entries[i].keys[j], sizeof(line) - strlen(line) - 1);
-        }
-        strncat(line, " -> prompt: ", sizeof(line) - strlen(line) - 1);
-        strncat(line, cfg->entries[i].prompt, sizeof(line) - strlen(line) - 1);
-        if (cfg->entries[i].special_key_count > 0) {
-            strncat(line, ", special: ", sizeof(line) - strlen(line) - 1);
-            for (int j = 0; j < cfg->entries[i].special_key_count; j++) {
-                strncat(line, cfg->entries[i].special_keys[j], sizeof(line) - strlen(line) - 1);
-                if (j + 1 < cfg->entries[i].special_key_count) {
-                    strncat(line, "+", sizeof(line) - strlen(line) - 1);
-                }
-            }
-        }
+        char line[512];
+        build_shortcut_line(cfg, i, line, sizeof(line));
 
         if ((int)strlen(line) > max_line_width) {
             line[max_line_width] = '\0';
@@ -101,22 +128,7 @@ void screen_draw_shortcuts(const config* cfg) {
         clrtoeol();
     }
 
-    int sep_line = shortcut_count;
-    char sep[256];
-    int term_w = getmaxx(stdscr);
-    int sep_len = term_w > 250 ? 250 : term_w;
-    for (int i = 0; i < sep_len; i++) {
-        sep[i] = SEP_CHAR;
-    }
-    sep[sep_len] = '\0';
-    move(sep_line, 0);
-    printw("%s", sep);
-
-    move(sep_line + 1, 0);
-    clrtoeol();
-    move(sep_line + 2, 0);
-    clrtoeol();
-
+    draw_separator(shortcut_count);
     output_render();
     refresh();
 }

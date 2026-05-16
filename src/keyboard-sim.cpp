@@ -50,22 +50,28 @@ void simulate_key(Display* dpy, const char* keysym_name, bool shift) {
     if (shift) XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Shift_L), False, 0);
 }
 
-void type_text(const char* text, const char* const* special_keys, int special_key_count, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
-    if (debug_enabled) printf("Debug: type_text text='%s', special_key_count=%d, target=0x%lx, request_id=%d\n", text, special_key_count, (unsigned long)target_window, request_id); fflush(stdout);
-
+static void wait_for_keys_released() {
     while (held_key_count.load(std::memory_order_relaxed) > 0) {
         struct timespec ts = {0, 10000000L};
         nanosleep(&ts, NULL);
     }
+}
+
+static Display* open_display_and_focus(const char* text, Window target_window, Window* out_prev_focus) {
+    if (debug_enabled) printf("Debug: type_text text='%s', special_key_count=%d, target=0x%lx\n", text, 0, (unsigned long)target_window);
+
+    wait_for_keys_released();
 
     Display* dpy = XOpenDisplay(NULL);
-    if (!dpy) { if (debug_enabled) printf("Debug: type_text failed to open display\n"); fflush(stdout); return; }
+    if (!dpy) {
+        if (debug_enabled) printf("Debug: type_text failed to open display\n");
+        fflush(stdout);
+        return nullptr;
+    }
 
     if (debug_enabled) printf("Debug: type_text opened display\n");
 
-    Window prev_focus = None;
-    int revert_to = RevertToNone;
-
+    *out_prev_focus = None;
     if (target_window != None) {
         Atom wm_state = XInternAtom(dpy, "_NET_WM_STATE", False);
         Atom wm_state_hidden = XInternAtom(dpy, "_NET_WM_STATE_HIDDEN", False);
@@ -76,15 +82,53 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
         pe.state = PropertyNewValue;
         XSendEvent(dpy, target_window, False, NoEventMask, (XEvent*)&pe);
 
-        XGetInputFocus(dpy, &prev_focus, &revert_to);
+        int revert_to = RevertToNone;
+        XGetInputFocus(dpy, out_prev_focus, &revert_to);
         XSetInputFocus(dpy, target_window, RevertToParent, CurrentTime);
         XFlush(dpy);
         struct timespec ts = {0, 50000000L};
         nanosleep(&ts, NULL);
 
-        if (debug_enabled) printf("Debug: type_text focused window 0x%lx (was 0x%lx)\n", (unsigned long)target_window, (unsigned long)prev_focus);
+        if (debug_enabled) printf("Debug: type_text focused window 0x%lx (was 0x%lx)\n", (unsigned long)target_window, (unsigned long)*out_prev_focus);
     }
 
+    return dpy;
+}
+
+static void type_char(Display* dpy, char c) {
+    if (c >= 'a' && c <= 'z') {
+        char buf[2] = {c, 0};
+        simulate_key(dpy, buf, false);
+    } else if (c >= 'A' && c <= 'Z') {
+        char buf[2] = {(char)(c + 32), 0};
+        simulate_key(dpy, buf, true);
+    } else if (c >= '0' && c <= '9') {
+        char buf[2] = {c, 0};
+        simulate_key(dpy, buf, false);
+    } else {
+        switch (c) {
+            case ' ':  simulate_key(dpy, "space", false); break;
+            case '.':  simulate_key(dpy, "period", false); break;
+            case ',':  simulate_key(dpy, "comma", false); break;
+            case '?':  simulate_key(dpy, "slash", true); break;
+            case '!':  simulate_key(dpy, "1", true); break;
+            case '-':  simulate_key(dpy, "minus", false); break;
+            case '_':  simulate_key(dpy, "minus", true); break;
+            case '\'': simulate_key(dpy, "apostrophe", false); break;
+            case '"':  simulate_key(dpy, "apostrophe", true); break;
+            case ':':  simulate_key(dpy, "semicolon", true); break;
+            case ';':  simulate_key(dpy, "semicolon", false); break;
+            case '+':  simulate_key(dpy, "equal", true); break;
+            case '=':  simulate_key(dpy, "equal", false); break;
+            case '/':  simulate_key(dpy, "slash", false); break;
+            case '(':  simulate_key(dpy, "9", true); break;
+            case ')':  simulate_key(dpy, "0", true); break;
+            default:   break;
+        }
+    }
+}
+
+static void type_characters(Display* dpy, const char* text, std::atomic<bool>& abort_requested, int request_id) {
     for (const char* p = text; *p; p++) {
         if (abort_requested.load()) {
             if (debug_enabled) printf("Debug: type_text aborted during character loop\n");
@@ -94,53 +138,17 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
             if (debug_enabled) printf("Debug: type_text request %d cancelled\n", request_id);
             break;
         }
-        char c = *p;
-        if (c >= 'a' && c <= 'z') {
-            char buf[2] = {c, 0};
-            simulate_key(dpy, buf, false);
-        } else if (c >= 'A' && c <= 'Z') {
-            char buf[2] = {(char)(c + 32), 0};
-            simulate_key(dpy, buf, true);
-        } else if (c >= '0' && c <= '9') {
-            char buf[2] = {c, 0};
-            simulate_key(dpy, buf, false);
-        } else {
-            switch (c) {
-                case ' ':  simulate_key(dpy, "space", false); break;
-                case '.':  simulate_key(dpy, "period", false); break;
-                case ',':  simulate_key(dpy, "comma", false); break;
-                case '?':  simulate_key(dpy, "slash", true); break;
-                case '!':  simulate_key(dpy, "1", true); break;
-                case '-':  simulate_key(dpy, "minus", false); break;
-                case '_':  simulate_key(dpy, "minus", true); break;
-                case '\'': simulate_key(dpy, "apostrophe", false); break;
-                case '"':  simulate_key(dpy, "apostrophe", true); break;
-                case ':':  simulate_key(dpy, "semicolon", true); break;
-                case ';':  simulate_key(dpy, "semicolon", false); break;
-                case '+':  simulate_key(dpy, "equal", true); break;
-                case '=':  simulate_key(dpy, "equal", false); break;
-                case '/':  simulate_key(dpy, "slash", false); break;
-                case '(':  simulate_key(dpy, "9", true); break;
-                case ')':  simulate_key(dpy, "0", true); break;
-                default:   break;
-            }
-        }
+        type_char(dpy, *p);
     }
+}
 
-    if (abort_requested.load()) {
-         if (debug_enabled) printf("Debug: type_text aborted before special keys\n");
-         goto cleanup;
-    }
-
-    if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
-        if (debug_enabled) printf("Debug: type_text request %d cancelled before special keys\n", request_id);
-        goto cleanup;
-    }
-
+static void type_special_keys(Display* dpy, const char* const* special_keys, int special_key_count, std::atomic<bool>& abort_requested, int request_id) {
     if (debug_enabled) printf("Debug: type_text special_keys count=%d\n", special_key_count);
+
     for (int i = 0; i < special_key_count; i++) {
         if (abort_requested.load()) break;
         if (request_id > 0 && g_request_storage.is_cancelled(request_id)) break;
+
         if (strcmp(special_keys[i], "enter") == 0 || strcmp(special_keys[i], "Return") == 0) {
             simulate_key(dpy, "Return", false);
         } else if (strcmp(special_keys[i], "space") == 0 || strcmp(special_keys[i], " ") == 0) {
@@ -151,12 +159,13 @@ void type_text(const char* text, const char* const* special_keys, int special_ke
             simulate_key(dpy, special_keys[i], false);
         }
     }
+}
 
-cleanup:
+static void cleanup_type_text(Display* dpy, Window target_window, Window prev_focus) {
     if (debug_enabled) printf("Debug: type_text flushing\n");
     XFlush(dpy);
-    struct timespec ts2 = {0, 10000000L};
-    nanosleep(&ts2, NULL);
+    struct timespec ts = {0, 10000000L};
+    nanosleep(&ts, NULL);
 
     if (target_window != None && prev_focus != None) {
         XSetInputFocus(dpy, prev_focus, RevertToParent, CurrentTime);
@@ -166,4 +175,29 @@ cleanup:
 
     if (debug_enabled) printf("Debug: type_text closing display\n");
     XCloseDisplay(dpy);
+}
+
+void type_text(const char* text, const char* const* special_keys, int special_key_count, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
+    if (!text) return;
+
+    Window prev_focus = None;
+    Display* dpy = open_display_and_focus(text, target_window, &prev_focus);
+    if (!dpy) return;
+
+    type_characters(dpy, text, abort_requested, request_id);
+
+    if (abort_requested.load()) {
+        if (debug_enabled) printf("Debug: type_text aborted before special keys\n");
+        goto cleanup;
+    }
+
+    if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
+        if (debug_enabled) printf("Debug: type_text request %d cancelled before special keys\n", request_id);
+        goto cleanup;
+    }
+
+    type_special_keys(dpy, special_keys, special_key_count, abort_requested, request_id);
+
+cleanup:
+    cleanup_type_text(dpy, target_window, prev_focus);
 }

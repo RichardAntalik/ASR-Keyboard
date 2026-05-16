@@ -74,12 +74,7 @@ void record_request_callback(pa_stream *p, size_t nbytes, void *userdata) {
     pa_stream_drop(p);
 }
 
-void* record_thread(void* arg) {
-    pa_mainloop* ml = pa_mainloop_new();
-    pa_context* ctx = pa_context_new(pa_mainloop_get_api(ml), "asr-rec");
-    pa_context_connect(ctx, NULL, PA_CONTEXT_NOFLAGS, NULL);
-    while (pa_context_get_state(ctx) != PA_CONTEXT_READY) pa_mainloop_iterate(ml, 1, NULL);
-
+static struct record_state* create_record_state(pa_context* ctx, pa_stream** out_stream) {
     struct record_state* state = (struct record_state*)malloc(sizeof(struct record_state));
     state->buffer = (short*)malloc(MAX_AUDIO_SIZE * sizeof(short));
     state->total = 0;
@@ -90,15 +85,20 @@ void* record_thread(void* arg) {
 
     pa_buffer_attr attr;
     attr.maxlength = -1;
-    attr.tlength = 160;      // 10ms of audio at 16kHz (16000 * 1 * 2 bytes)
+    attr.tlength = 160;
     attr.prebuf = 0;
-    attr.minreq = 10;        // minimum request in bytes
-    attr.fragsize = 10;      // fragment size in bytes
+    attr.minreq = 10;
+    attr.fragsize = 10;
 
     pa_stream_connect_record(s, source_name[0] ? source_name : NULL, &attr, PA_STREAM_ADJUST_LATENCY);
+    *out_stream = s;
 
+    return state;
+}
+
+static void run_record_loop(pa_mainloop* ml, pa_stream* s) {
     while (recording_active.load()) pa_mainloop_iterate(ml, 1, NULL);
-    
+
     for(int i=0; i<15; i++) {
         usleep(10000);
         pa_mainloop_iterate(ml, 0, NULL);
@@ -106,8 +106,25 @@ void* record_thread(void* arg) {
 
     pa_stream_disconnect(s);
     pa_stream_unref(s);
+}
+
+static void cleanup_pa(pa_mainloop* ml, pa_context* ctx) {
     pa_context_disconnect(ctx);
     pa_context_unref(ctx);
     pa_mainloop_free(ml);
+}
+
+void* record_thread(void* arg) {
+    pa_mainloop* ml = pa_mainloop_new();
+    pa_context* ctx = pa_context_new(pa_mainloop_get_api(ml), "asr-rec");
+    pa_context_connect(ctx, NULL, PA_CONTEXT_NOFLAGS, NULL);
+    while (pa_context_get_state(ctx) != PA_CONTEXT_READY) pa_mainloop_iterate(ml, 1, NULL);
+
+    pa_stream* s = NULL;
+    struct record_state* state = create_record_state(ctx, &s);
+
+    run_record_loop(ml, s);
+    cleanup_pa(ml, ctx);
+
     return (void*)state;
 }

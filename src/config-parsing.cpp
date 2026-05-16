@@ -6,18 +6,6 @@
 #include <errno.h>
 
 bool create_default_config(const char* path) {
-    char dir_path[512];
-    strncpy(dir_path, path, sizeof(dir_path));
-    char* last_slash = strrchr(dir_path, '/');
-    if (last_slash) {
-        *last_slash = '\0';
-        // Recursive directory creation is not trivial in C, 
-        // but for ~/.config/asr-kb we can try to create it.
-        // We'll assume the user might need to do this or we try a simple approach.
-        // For simplicity and robustness, we use a system call or multiple mkdirs.
-        // But better yet, let's just try to open the file first.
-    }
-
     const char* default_content = R"([
   { "shortcut": ["ctrl", "super", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": "null" },
   { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": "enter" }
@@ -33,21 +21,16 @@ bool create_default_config(const char* path) {
     return true;
 }
 
-config* load_config(const char* path) {
-    config* cfg = (config*)malloc(sizeof(config));
-    cfg->entry_count = 0;
-
+static char* read_config_file(const char* path, long* out_size) {
     struct stat st;
     if (stat(path, &st) != 0) {
-        free(cfg);
         return nullptr;
     }
 
     FILE* fp = fopen(path, "r");
     if (!fp) {
         printf("Failed to open config file: %s\n", path);
-        free(cfg);
-        exit(1);
+        return nullptr;
     }
 
     fseek(fp, 0, SEEK_END);
@@ -63,50 +46,73 @@ config* load_config(const char* path) {
     content[file_size] = '\0';
     fclose(fp);
 
+    *out_size = file_size;
+    return content;
+}
+
+static void free_shortcut_entry(shortcut_entry* entry) {
+    for (int j = 0; j < entry->key_count; j++) {
+        free(entry->keys[j]);
+    }
+    free(entry->keys);
+    free(entry->prompt);
+    for (int j = 0; j < entry->special_key_count; j++) {
+        free(entry->special_keys[j]);
+    }
+    free(entry->special_keys);
+}
+
+static bool parse_entry(nlohmann::json& entry, shortcut_entry* parsed, int idx) {
+    parsed->key_count = entry["shortcut"].size();
+    parsed->keys = (char**)calloc(parsed->key_count, sizeof(char*));
+    for (int j = 0; j < parsed->key_count; j++) {
+        parsed->keys[j] = strdup(entry["shortcut"][j].get<std::string>().c_str());
+    }
+    parsed->prompt = strdup(entry["prompt"].get<std::string>().c_str());
+
+    if (entry.contains("special_key")) {
+        if (entry["special_key"].is_array()) {
+            parsed->special_key_count = entry["special_key"].size();
+            parsed->special_keys = (char**)calloc(parsed->special_key_count, sizeof(char*));
+            for (int j = 0; j < parsed->special_key_count; j++) {
+                parsed->special_keys[j] = strdup(entry["special_key"][j].get<std::string>().c_str());
+            }
+        } else {
+            parsed->special_key_count = 1;
+            parsed->special_keys = (char**)calloc(1, sizeof(char*));
+            parsed->special_keys[0] = strdup(entry["special_key"].get<std::string>().c_str());
+        }
+    } else {
+        parsed->special_key_count = 0;
+        parsed->special_keys = nullptr;
+    }
+
+    return true;
+}
+
+static bool parse_config_json(const char* content, config* cfg) {
     nlohmann::json json_data;
     try {
         json_data = nlohmann::json::parse(content);
     } catch (const nlohmann::json::parse_error& e) {
         printf("Error parsing config file: %s\n", e.what());
-        free(content);
-        free(cfg);
-        return nullptr;
+        return false;
     }
-    free(content);
 
     try {
         cfg->entry_count = json_data.size();
         cfg->entries = (shortcut_entry*)calloc(cfg->entry_count, sizeof(shortcut_entry));
 
         for (int i = 0; i < cfg->entry_count; i++) {
-            auto& entry = json_data[i];
-            cfg->entries[i].key_count = entry["shortcut"].size();
-            cfg->entries[i].keys = (char**)calloc(cfg->entries[i].key_count, sizeof(char*));
-            for (int j = 0; j < cfg->entries[i].key_count; j++) {
-                cfg->entries[i].keys[j] = strdup(entry["shortcut"][j].get<std::string>().c_str());
-            }
-            cfg->entries[i].prompt = strdup(entry["prompt"].get<std::string>().c_str());
-            if (entry.contains("special_key")) {
-                if (entry["special_key"].is_array()) {
-                    cfg->entries[i].special_key_count = entry["special_key"].size();
-                    cfg->entries[i].special_keys = (char**)calloc(cfg->entries[i].special_key_count, sizeof(char*));
-                    for (int j = 0; j < cfg->entries[i].special_key_count; j++) {
-                        cfg->entries[i].special_keys[j] = strdup(entry["special_key"][j].get<std::string>().c_str());
-                    }
-                } else {
-                    cfg->entries[i].special_key_count = 1;
-                    cfg->entries[i].special_keys = (char**)calloc(1, sizeof(char*));
-                    cfg->entries[i].special_keys[0] = strdup(entry["special_key"].get<std::string>().c_str());
-                }
-            } else {
-                cfg->entries[i].special_key_count = 0;
-                cfg->entries[i].special_keys = nullptr;
+            if (!parse_entry(json_data[i], &cfg->entries[i], i)) {
+                free_config(cfg);
+                return false;
             }
         }
     } catch (const nlohmann::json::exception& e) {
         printf("Config structure error: %s\n", e.what());
         free_config(cfg);
-        return nullptr;
+        return false;
     }
 
     for (int i = 0; i < cfg->entry_count - 1; i++) {
@@ -118,21 +124,33 @@ config* load_config(const char* path) {
             }
         }
     }
+    return true;
+}
+
+config* load_config(const char* path) {
+    config* cfg = (config*)malloc(sizeof(config));
+    cfg->entry_count = 0;
+
+    long file_size;
+    char* content = read_config_file(path, &file_size);
+    if (!content) {
+        free(cfg);
+        return nullptr;
+    }
+
+    if (!parse_config_json(content, cfg)) {
+        free(content);
+        return nullptr;
+    }
+
+    free(content);
     return cfg;
 }
 
 void free_config(config* cfg) {
     if (!cfg) return;
     for (int i = 0; i < cfg->entry_count; i++) {
-        for (int j = 0; j < cfg->entries[i].key_count; j++) {
-            free(cfg->entries[i].keys[j]);
-        }
-        free(cfg->entries[i].keys);
-        free(cfg->entries[i].prompt);
-        for (int j = 0; j < cfg->entries[i].special_key_count; j++) {
-            free(cfg->entries[i].special_keys[j]);
-        }
-        free(cfg->entries[i].special_keys);
+        free_shortcut_entry(&cfg->entries[i]);
     }
     free(cfg->entries);
     free(cfg);

@@ -28,22 +28,21 @@ char* base64_encode(short* buffer, size_t size) {
     return result;
 }
 
-size_t write_cb(void* ptr, size_t size, size_t nmemb, void* data) {
+static size_t write_cb(void* ptr, size_t size, size_t nmemb, void* data) {
     memcpy((char*)data + strlen((char*)data), (char*)ptr, size * nmemb);
     return size * nmemb;
 }
 
-void send_to_server(short* buffer, size_t size, const char* const* special_keys, int special_key_count, const char* prompt, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
-    if (size == 0) return;
-    CURL *curl = curl_easy_init();
-    if(!curl) return;
+static void build_request_json(char* encoded, const char* prompt, int request_id, Window target_window, char* out_json, size_t jlen) {
+    snprintf(out_json, jlen, "{\"audio_bytes\": \"%s\", \"sample_rate\": 16000, \"prompt\": \"%s\", \"request_id\": %d, \"target_window\": %lu}",
+             encoded, prompt, request_id, (unsigned long)target_window);
+}
 
-    char* encoded = base64_encode(buffer, size);
-    size_t jlen = (size * 3) + 2048;
-    char* json = (char*)malloc(jlen);
-    snprintf(json, jlen, "{\"audio_bytes\": \"%s\", \"sample_rate\": 16000, \"prompt\": \"%s\", \"request_id\": %d, \"target_window\": %lu}", encoded, prompt, request_id, (unsigned long)target_window);
+static long execute_curl_request(const char* json, std::atomic<bool>& abort_requested, char* resp) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return 0;
+
     struct curl_slist* h = curl_slist_append(NULL, "Content-Type: application/json");
-    char resp[16384] = {0};
 
     curl_easy_setopt(curl, CURLOPT_URL, SERVER_URL);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json);
@@ -65,34 +64,63 @@ void send_to_server(short* buffer, size_t size, const char* const* special_keys,
         curl_multi_poll(multi, nullptr, 0, 100, nullptr);
     } while (running > 0);
 
-    if (!abort_requested.load()) {
-        long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        if (debug_enabled) printf("Debug: HTTP response code=%ld, request_id=%d\n", http_code, request_id); fflush(stdout);
-        if (http_code == 200) {
-            try {
-                nlohmann::json json_resp = nlohmann::json::parse(resp);
-                std::string transcript = json_resp.value("transcript", "");
-                if (debug_enabled) printf("Debug: transcript='%s', request_id=%d\n", transcript.c_str(), request_id); fflush(stdout);
-                if (!transcript.empty()) {
-                    bool cancelled = g_request_storage.is_cancelled(request_id);
-                    if (debug_enabled) printf("Debug: is_cancelled(%d)=%d\n", request_id, cancelled); fflush(stdout);
-                    if (!cancelled) {
-                        Window response_window = (Window)json_resp.value("target_window", (long)target_window);
-                        if (debug_enabled) printf("Debug: typing to window 0x%lx\n", (unsigned long)response_window); fflush(stdout);
-                        type_text(transcript.c_str(), (const char* const*)special_keys, special_key_count, response_window, abort_requested, request_id);
-                    } else {
-                        if (debug_enabled) printf("Debug: request %d cancelled, skipping typing\n", request_id);
-                    }
-                }
-            } catch (...) {
-                // Don't type anything if parsing fails to avoid typing error messages
-            }
-        }
-    }
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
     curl_easy_cleanup(curl);
     curl_multi_cleanup(multi);
-    free(json);
     curl_slist_free_all(h);
+
+    return http_code;
+}
+
+static void process_response(long http_code, char* resp, Window target_window, const char* const* special_keys,
+                              int special_key_count, std::atomic<bool>& abort_requested, int request_id) {
+    if (debug_enabled) printf("Debug: HTTP response code=%ld, request_id=%d\n", http_code, request_id);
+    fflush(stdout);
+
+    if (http_code == 200) {
+        try {
+            nlohmann::json json_resp = nlohmann::json::parse(resp);
+            std::string transcript = json_resp.value("transcript", "");
+            if (debug_enabled) printf("Debug: transcript='%s', request_id=%d\n", transcript.c_str(), request_id);
+            fflush(stdout);
+
+            if (!transcript.empty()) {
+                bool cancelled = g_request_storage.is_cancelled(request_id);
+                if (debug_enabled) printf("Debug: is_cancelled(%d)=%d\n", request_id, cancelled);
+                fflush(stdout);
+
+                if (!cancelled) {
+                    Window response_window = (Window)json_resp.value("target_window", (long)target_window);
+                    if (debug_enabled) printf("Debug: typing to window 0x%lx\n", (unsigned long)response_window);
+                    fflush(stdout);
+                    type_text(transcript.c_str(), (const char* const*)special_keys, special_key_count, response_window, abort_requested, request_id);
+                } else {
+                    if (debug_enabled) printf("Debug: request %d cancelled, skipping typing\n", request_id);
+                }
+            }
+        } catch (...) {
+            // Don't type anything if parsing fails to avoid typing error messages
+        }
+    }
+}
+
+void send_to_server(short* buffer, size_t size, const char* const* special_keys, int special_key_count,
+                     const char* prompt, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
+    if (size == 0) return;
+
+    char* encoded = base64_encode(buffer, size);
+    size_t jlen = (size * 3) + 2048;
+    char* json = (char*)malloc(jlen);
+    build_request_json(encoded, prompt, request_id, target_window, json, jlen);
+
+    char resp[16384] = {0};
+    long http_code = execute_curl_request(json, abort_requested, resp);
+
+    if (!abort_requested.load()) {
+        process_response(http_code, resp, target_window, special_keys, special_key_count, abort_requested, request_id);
+    }
+
+    free(json);
 }
