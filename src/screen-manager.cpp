@@ -7,6 +7,7 @@
 #include <cstring>
 #include <pulse/pulseaudio.h>
 #include <algorithm>
+#include <cctype>
 
 std::mutex screen_mutex;
 
@@ -63,25 +64,41 @@ void screen_cleanup() {
     endwin();
 }
 
+static void capitalize_first(char* s) {
+    if (s && s[0]) {
+        s[0] = toupper(static_cast<unsigned char>(s[0]));
+    }
+}
+
 static void build_shortcut_line(const shortcut_entry& entry, char* line, int max_len) {
     line[0] = '\0';
-    strncat(line, "  Shortcut: ", max_len - strlen(line) - 1);
-    strncat(line, entry.keys[0].c_str(), max_len - strlen(line) - 1);
+    strncat(line, "  ", max_len - strlen(line) - 1);
+    char key_copy[64];
+    strncpy(key_copy, entry.keys[0].c_str(), sizeof(key_copy) - 1);
+    key_copy[sizeof(key_copy) - 1] = '\0';
+    capitalize_first(key_copy);
+    strncat(line, key_copy, max_len - strlen(line) - 1);
 
     for (size_t j = 1; j < entry.keys.size(); j++) {
         strncat(line, "+", max_len - strlen(line) - 1);
-        strncat(line, entry.keys[j].c_str(), max_len - strlen(line) - 1);
+        strncpy(key_copy, entry.keys[j].c_str(), sizeof(key_copy) - 1);
+        key_copy[sizeof(key_copy) - 1] = '\0';
+        capitalize_first(key_copy);
+        strncat(line, key_copy, max_len - strlen(line) - 1);
     }
 
-    strncat(line, " -> prompt: ", max_len - strlen(line) - 1);
+    strncat(line, " - ", max_len - strlen(line) - 1);
     strncat(line, entry.prompt.c_str(), max_len - strlen(line) - 1);
 
     if (!entry.special_keys.empty()) {
-        strncat(line, ", special: ", max_len - strlen(line) - 1);
+        strncat(line, " - special keys: ", max_len - strlen(line) - 1);
         for (size_t j = 0; j < entry.special_keys.size(); j++) {
-            strncat(line, entry.special_keys[j].c_str(), max_len - strlen(line) - 1);
+            strncpy(key_copy, entry.special_keys[j].c_str(), sizeof(key_copy) - 1);
+            key_copy[sizeof(key_copy) - 1] = '\0';
+            capitalize_first(key_copy);
+            strncat(line, key_copy, max_len - strlen(line) - 1);
             if (j + 1 < entry.special_keys.size()) {
-                strncat(line, "+", max_len - strlen(line) - 1);
+                strncat(line, ", ", max_len - strlen(line) - 1);
             }
         }
     }
