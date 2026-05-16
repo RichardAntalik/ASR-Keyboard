@@ -50,7 +50,7 @@ Entries are sorted by key count (descending) to prevent subset overlap.
 ./asr-kb -i 3               # select audio source by index
 ./asr-kb -d                 # enable debug output
 ./asr-kb -c /path/config.json  # specify config file
-./asr-kb -a                 # remember active window for text injection
+./asr-kb -a                 # type into the window that has focus when the server responds (default: active window)
 ./asr-kb -h                 # show help
 ```
 

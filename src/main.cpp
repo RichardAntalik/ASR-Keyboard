@@ -99,7 +99,7 @@ int main(int argc, char* argv[]) {
             printf("  -i <index> select audio source by index\n");
             printf("  -d    enable debug output\n");
             printf("  -c <config.json> specify config file\n");
-            printf("  -a    remember the active window for typing\n");
+            printf("  -a    type into the window that has focus when the server responds\n");
             printf("  -h    show help\n");
             return 0;
         }
@@ -229,11 +229,11 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                             active_entry = i;
-                            if (remember_window) {
-                                target_window = get_active_window(dpy);
-                            } else {
-                                target_window = None;
-                            }
+            if (remember_window) {
+                target_window = None;
+            } else {
+                target_window = get_active_window(dpy);
+            }
                             
                             if (debug_enabled) printf("Debug: all keys pressed! starting recording, target=0x%lx\n", (unsigned long)target_window);
                             pthread_create(&thread_id, NULL, record_thread, NULL);
