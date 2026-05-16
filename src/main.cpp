@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <atomic>
+#include <csignal>
 
 #include "json.hpp"
 #include "config-parsing.h"
@@ -18,7 +19,9 @@
 #include "keyboard-sim.h"
 #include "client.h"
 #include "queue.h"
+#include "screen-manager.h"
 #include "request-storage.h"
+#include "vu-thread.h"
 
 std::atomic<bool> recording_active{false};
 std::atomic<bool> abort_requested{false};
@@ -27,6 +30,18 @@ bool debug_enabled{false};
 char* config_path = nullptr;
 
 thread_safe_queue transcription_queue;
+
+static config* g_cfg_for_resize = nullptr;
+
+extern void screen_handle_resize(const config* cfg);
+
+static void sigwinch_handler(int) {
+    if (g_cfg_for_resize) {
+        pthread_mutex_lock(&screen_mutex);
+        screen_handle_resize(g_cfg_for_resize);
+        pthread_mutex_unlock(&screen_mutex);
+    }
+}
 
 void* worker_thread_func(void* arg) {
     while (true) {
@@ -127,24 +142,31 @@ int main(int argc, char* argv[]) {
     config* cfg = load_config(config_path);
 
     if (cfg == nullptr) {
-        printf("Config file not found at %s\n", config_path);
-        printf("Would you like to create a default configuration file? (y/n): ");
+        // printf("Config file not found at %s\n", config_path);
+        // printf("Would you like to create a default configuration file? (y/n): ");
         char response = getchar();
         if (response == 'y' || response == 'Y') {
             if (create_default_config(config_path)) {
-                printf("Default configuration created successfully at %s\n", config_path);
+                // printf("Default configuration created successfully at %s\n", config_path);
                 cfg = load_config(config_path);
             } else {
-                printf("Failed to create default configuration. Please create it manually at %s\n", config_path);
+                // printf("Failed to create default configuration. Please create it manually at %s\n", config_path);
                 return 1;
             }
         } else {
-            printf("Exiting without configuration.\n");
+            // printf("Exiting without configuration.\n");
             return 1;
         }
     }
 
     if (!cfg) return 1;
+
+    g_cfg_for_resize = cfg;
+    signal(SIGWINCH, sigwinch_handler);
+
+    screen_init();
+    screen_draw_shortcuts(cfg);
+    screen_draw_vu_meter(0.0f);
 
     bool keycode_state[512] = {false};
     char** active_special_keys = nullptr;
@@ -155,22 +177,26 @@ int main(int argc, char* argv[]) {
     pthread_t worker_thread;
     pthread_create(&worker_thread, NULL, worker_thread_func, NULL);
 
-    for (int i = 0; i < cfg->entry_count; i++) {
-        printf("Shortcut: %s", cfg->entries[i].keys[0]);
-        for (int j = 1; j < cfg->entries[i].key_count; j++) {
-            printf("+%s", cfg->entries[i].keys[j]);
-        }
-        printf(" -> prompt: %s, special: ", cfg->entries[i].prompt);
-        for (int j = 0; j < cfg->entries[i].special_key_count; j++) {
-            printf("%s", cfg->entries[i].special_keys[j]);
-            if (j + 1 < cfg->entries[i].special_key_count) printf("+");
-        }
-        printf("\n");
-    }
+    // for (int i = 0; i < cfg->entry_count; i++) {
+    //     printf("Shortcut: %s", cfg->entries[i].keys[0]);
+    //     for (int j = 1; j < cfg->entries[i].key_count; j++) {
+    //         printf("+%s", cfg->entries[i].keys[j]);
+    //     }
+    //     printf(" -> prompt: %s, special: ", cfg->entries[i].prompt);
+    //     for (int j = 0; j < cfg->entries[i].special_key_count; j++) {
+    //         printf("%s", cfg->entries[i].special_keys[j]);
+    //         if (j + 1 < cfg->entries[i].special_key_count) printf("+");
+    //     }
+    //     printf("\n");
+    // }
 
     while (1) {
         XEvent ev;
         XNextEvent(dpy, &ev);
+        if (recording_active.load()) {
+            screen_draw_vu_meter(current_volume);
+            screen_refresh();
+        }
         if (ev.type == GenericEvent && ev.xcookie.extension == xi_opcode && XGetEventData(dpy, &ev.xcookie)) {
             XIRawEvent *raw = (XIRawEvent*)ev.xcookie.data;
             int keycode = raw->detail;
@@ -194,6 +220,7 @@ int main(int argc, char* argv[]) {
                         
                         if (all_pressed) {
                             recording_active.store(true);
+                            vu_thread_start();
                             active_special_key_count = cfg->entries[i].special_key_count;
                             if (active_special_key_count > 0) {
                                 active_special_keys = (char**)malloc(active_special_key_count * sizeof(char*));
@@ -241,10 +268,18 @@ int main(int argc, char* argv[]) {
 
                     if (active_released) {
                         recording_active.store(false);
+                        current_volume = 0.0f;
+                        pthread_mutex_lock(&screen_mutex);
+                        screen_draw_vu_meter(0.0f);
+                        pthread_mutex_unlock(&screen_mutex);
+                        vu_thread_stop();
+                        vu_thread_wait();
                         void* ret;
                         pthread_join(thread_id, &ret);
                         struct record_state* res = (struct record_state*)ret;
-                        printf("Finished. Captured %zu samples.\n", res->total);
+                        pthread_mutex_lock(&screen_mutex);
+                        screen_print(0, "Finished. Captured %zu samples.", res->total);
+                        pthread_mutex_unlock(&screen_mutex);
                         
                         queue_item item;
                         item.buffer = res->buffer;
@@ -272,6 +307,7 @@ int main(int argc, char* argv[]) {
     transcription_queue.push(queue_item{nullptr, 0, nullptr, 0, nullptr, None, 0});
     pthread_join(worker_thread, nullptr);
 
+    screen_cleanup();
     XCloseDisplay(dpy);
     return 0;
 }

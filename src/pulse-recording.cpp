@@ -1,10 +1,12 @@
 #include "pulse-recording.h"
 #include <cstdio>
 #include <cstring>
+#include <math.h>
 
 extern std::atomic<bool> abort_requested;
 
 char source_name[MAX_SOURCE_NAME] = "";
+float current_volume = 0.0f;
 
 typedef struct {
     int target_index;
@@ -51,6 +53,23 @@ void record_request_callback(pa_stream *p, size_t nbytes, void *userdata) {
             memcpy(state->buffer + state->total, data, nbytes);
             state->total += samples;
         }
+        
+        const short* samples_ptr = (const short*)data;
+        double sum = 0.0;
+        for (size_t i = 0; i < samples; i++) {
+            double val = (double)samples_ptr[i] / 32768.0;
+            sum += val * val;
+        }
+        float rms = (float)sqrt(sum / (double)samples);
+        
+        if (rms < 0.001f) {
+            current_volume = 0.0f;
+        } else {
+            float db = 20.0f * log10f(rms);
+            current_volume = (db + 60.0f) / 60.0f;
+        }
+        if (current_volume < 0.0f) current_volume = 0.0f;
+        if (current_volume > 1.0f) current_volume = 1.0f;
     }
     pa_stream_drop(p);
 }

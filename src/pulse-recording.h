@@ -9,10 +9,13 @@
 
 extern std::atomic<bool> recording_active;
 extern char source_name[MAX_SOURCE_NAME];
+extern float current_volume;
 
 struct record_state {
     short* buffer;
     size_t total;
+    pa_volume_t* last_volume;
+    bool volume_valid;
 };
 
 void run_pa_query(int index);

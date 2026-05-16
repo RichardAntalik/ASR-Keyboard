@@ -71,12 +71,12 @@ def transcribe(req: TranscribeRequest) -> Union[JSONResponse, PlainTextResponse]
         # If it sends raw floats, use np.float32.
         audio_data: np.ndarray = np.frombuffer(audio_raw, dtype=np.int16)
     except Exception as e:
-        return JSONResponse(content={"error": f"Decoding failed: {str(e)}"}, status_code=400)
+        return JSONResponse(content={"transcript": ""}, status_code=400)
 
     audio_tensor = torch.from_numpy(np.array(audio_data)).unsqueeze(0)
 
     if audio_tensor.shape[-1] < 512:
-        return JSONResponse(content={"transcript": "[No speech detected]", "request_id": req.request_id, "target_window": req.target_window})
+        return JSONResponse(content={"transcript": ""})
 
     audio_tensor = audio_tensor / audio_tensor.abs().max()
 
@@ -103,9 +103,8 @@ def transcribe(req: TranscribeRequest) -> Union[JSONResponse, PlainTextResponse]
         print(f"Transcription took {duration:.4f} seconds")
 
     if not transcript.strip():
-        return JSONResponse(content={"transcript": "[No speech detected]", "request_id": req.request_id, "target_window": req.target_window})
-    else:
-        return JSONResponse(content={"transcript": transcript.strip(), "request_id": req.request_id, "target_window": req.target_window})
+        return JSONResponse(content={"transcript": ""})
+    return JSONResponse(content={"transcript": transcript.strip()})
 
 
 if __name__ == "__main__":

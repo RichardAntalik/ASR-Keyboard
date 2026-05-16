@@ -79,10 +79,12 @@ Each transcription request is assigned a unique `request_id` (sent to the server
 - **src/main.cpp** — Application entry, config prompts, XInput event loop, and thread coordination
 - **src/config-parsing.cpp** — Configuration loading, validation, and generation
 - **src/client.cpp** — Communication with the ASR server via HTTP (with timeout)
-- **src/pulse-recording.cpp** — PulseAudio source listing and audio recording
+- **src/pulse-recording.cpp** — PulseAudio source listing and audio recording with RMS volume calculation
 - **src/keyboard-sim.cpp** — XTest keyboard simulation for typing transcripts
 - **src/queue.h / src/queue.cpp** — Thread-safe queue for passing recordings to the worker
 - **src/request-storage.h / src/request-storage.cpp** — Per-request cancellation tracking with unique IDs
+- **src/screen-manager.cpp / src/screen-manager.h** — ncurses-based UI overlay (shortcuts, VU meter, scrolling output)
+- **src/vu-thread.cpp / src/vu-thread.h** — Background thread for VU meter updates
 
 ## Build
 
@@ -99,7 +101,7 @@ Binary `asr-kb` is placed in the project directory.
 
 ## Dependencies
 
-X11, PulseAudio, libcurl, pthreads, nlohmann/json.
+X11, PulseAudio, libcurl, ncurses, pthreads, nlohmann/json.
 
 ## Troubleshooting
 
