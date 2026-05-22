@@ -141,16 +141,8 @@ static config* load_or_create_config() {
     config* cfg = load_config(path);
 
     if (cfg == nullptr) {
-        char response = getchar();
-        if (response == 'y' || response == 'Y') {
-            if (create_default_config(path)) {
-                cfg = load_config(path);
-            } else {
-                return nullptr;
-            }
-        } else {
-            return nullptr;
-        }
+        printf("No config file found. Creating default configuration.\n");
+        cfg = create_default_config(path);
     }
 
     return cfg;

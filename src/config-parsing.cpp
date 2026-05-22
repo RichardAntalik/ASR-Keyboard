@@ -4,20 +4,56 @@
 #include <sys/stat.h>
 #include <algorithm>
 
-bool create_default_config(const char* path) {
-    const char* default_content = R"([
+static const char* default_content = R"([
   { "shortcut": ["ctrl", "super", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": ["null"] },
   { "shortcut": ["ctrl", "super", "alt", "space"], "prompt": "<|audio|>transcribe the speech with proper punctuation and capitalization.", "special_key": ["enter"] }
 ])";
 
+config* create_default_config(const char* path) {
+    config* cfg = new config();
+    nlohmann::json json_data;
+    try {
+        json_data = nlohmann::json::parse(default_content);
+    } catch (const nlohmann::json::parse_error& e) {
+        printf("Error parsing default config: %s\n", e.what());
+        delete cfg;
+        return nullptr;
+    }
+
+    try {
+        for (auto& entry : json_data) {
+            shortcut_entry parsed;
+            for (auto& k : entry["shortcut"]) {
+                parsed.keys.push_back(k.get<std::string>());
+            }
+            parsed.prompt = entry["prompt"].get<std::string>();
+            if (entry.contains("special_key")) {
+                for (auto& sk : entry["special_key"]) {
+                    parsed.special_keys.push_back(sk.get<std::string>());
+                }
+            }
+            cfg->entries.push_back(std::move(parsed));
+        }
+    } catch (const nlohmann::json::exception& e) {
+        printf("Default config structure error: %s\n", e.what());
+        delete cfg;
+        return nullptr;
+    }
+
+    std::sort(cfg->entries.begin(), cfg->entries.end(), [](const shortcut_entry& a, const shortcut_entry& b) {
+        return a.keys.size() > b.keys.size();
+    });
+
     FILE* fp = fopen(path, "w");
     if (!fp) {
         perror("Failed to create config file");
-        return false;
+        delete cfg;
+        return nullptr;
     }
     fputs(default_content, fp);
     fclose(fp);
-    return true;
+
+    return cfg;
 }
 
 static char* read_config_file(const char* path, long* out_size) {
