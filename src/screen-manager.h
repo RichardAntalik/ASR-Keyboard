@@ -15,5 +15,6 @@ void screen_print(int line, const char* fmt, ...);
 void screen_refresh();
 void screen_handle_resize(const config* cfg);
 void screen_debug(const char* fmt, ...);
+void screen_push_server_output(const char* line);
 
 #endif

@@ -53,6 +53,7 @@ endif()
 set(INSTALL_BIN_DIR "/usr/local/bin" CACHE PATH "Installation directory for binaries")
 
 install(TARGETS asr-kb DESTINATION ${INSTALL_BIN_DIR})
+install(FILES asr-server.py DESTINATION ${INSTALL_BIN_DIR} PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 
 add_custom_target(uninstall
     COMMAND ${CMAKE_COMMAND} -E remove ${INSTALL_BIN_DIR}/asr-kb

@@ -35,6 +35,12 @@ std::atomic<int> held_key_count{0};
 bool debug_enabled{false};
 std::string config_path_str;
 
+const char* g_server_url = "http://127.0.0.1:8000/transcribe";
+FILE* g_server_stdout = nullptr;
+std::thread g_server_reader_thread;
+pid_t g_server_pid = 0;
+static char g_custom_server_path[4096] = "";
+
 thread_safe_queue transcription_queue;
 
 static config* g_cfg_for_resize = nullptr;
@@ -67,14 +73,25 @@ static void parse_args(int argc, char* argv[], bool* remember_window) {
         if (strcmp(argv[i], "-a") == 0) {
             *remember_window = true;
         }
+        if (strcmp(argv[i], "--server-url") == 0 && i + 1 < argc) {
+            g_server_url = argv[i+1];
+            i++;
+        }
+        if (strcmp(argv[i], "--custom-server") == 0 && i + 1 < argc) {
+            strncpy(g_custom_server_path, argv[i+1], sizeof(g_custom_server_path) - 1);
+            g_custom_server_path[sizeof(g_custom_server_path) - 1] = '\0';
+            i++;
+        }
         if (strcmp(argv[i], "-h") == 0) {
             printf("%s — hold a hotkey to record audio, release to transcribe speech and type the result into the window that was active when you pressed the hotkey.\n", argv[0]);
-            printf("Usage: %s [-l] [-i <index>] [-d] [-c <config.json>] [-a] [-h]\n", argv[0]);
+            printf("Usage: %s [-l] [-i <index>] [-d] [-c <config.json>] [-a] [--server-url <url>] [--custom-server <path>] [-h]\n", argv[0]);
             printf("  -l    list audio sources\n");
             printf("  -i <index> select audio source by index\n");
             printf("  -d    enable debug output\n");
             printf("  -c <config.json> specify config file\n");
             printf("  -a    type into the window that has focus when the server responds\n");
+            printf("  --server-url <url> connect to an external server instead of spawning one\n");
+            printf("  --custom-server <path> use a custom server script instead of bundled one\n");
             printf("  -h    show help\n");
             exit(0);
         }
@@ -146,6 +163,90 @@ static void init_screen(config* cfg) {
     screen_init();
     screen_draw_shortcuts(cfg);
     screen_draw_vu_meter(0.0f);
+}
+
+static std::string resolve_server_path() {
+    if (g_custom_server_path[0] != '\0') {
+        return g_custom_server_path;
+    }
+
+    char exe_path[8192];
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len != -1) {
+        exe_path[len] = '\0';
+        char* last_slash = strrchr(exe_path, '/');
+        if (last_slash) {
+            *last_slash = '\0';
+            std::string server_path = std::string(exe_path) + "/asr-server.py";
+            if (access(server_path.c_str(), F_OK) == 0) {
+                return server_path;
+            }
+        }
+    }
+
+    if (access("/usr/local/bin/asr-server.py", F_OK) == 0) {
+        return "/usr/local/bin/asr-server.py";
+    }
+
+    if (access("/usr/bin/asr-server.py", F_OK) == 0) {
+        return "/usr/bin/asr-server.py";
+    }
+
+    if (access("./asr-server.py", F_OK) == 0) {
+        return "./asr-server.py";
+    }
+
+    return "";
+}
+
+void read_server_output() {
+    char line[1024];
+    while (fgets(line, sizeof(line), g_server_stdout)) {
+        line[strcspn(line, "\n")] = 0;
+        screen_push_server_output(line);
+    }
+}
+
+static bool spawn_server() {
+    std::string server_path = resolve_server_path();
+
+    if (server_path.empty()) {
+        std::lock_guard<std::mutex> lock(screen_mutex);
+        screen_print(0, "Server script not found. Install with: sudo make install");
+        refresh();
+        return false;
+    }
+
+    if (debug_enabled) screen_debug("Spawning server: python3 %s", server_path.c_str());
+
+    std::string cmd = "python3 " + server_path + " 2>&1";
+    g_server_stdout = popen(cmd.c_str(), "r");
+    if (!g_server_stdout) {
+        std::lock_guard<std::mutex> lock(screen_mutex);
+        screen_print(0, "Failed to start server process");
+        refresh();
+        return false;
+    }
+
+    g_server_reader_thread = std::thread(read_server_output);
+
+    g_server_url = "http://127.0.0.1:8000/transcribe";
+
+    if (debug_enabled) screen_debug("Server started");
+    return true;
+}
+
+static void stop_server() {
+    if (g_server_reader_thread.joinable()) {
+        g_server_reader_thread.join();
+    }
+
+    if (g_server_stdout) {
+        pclose(g_server_stdout);
+        g_server_stdout = nullptr;
+    }
+
+    g_server_pid = 0;
 }
 
 static void worker_thread_func() {
@@ -343,6 +444,28 @@ int main(int argc, char* argv[]) {
 
     state.worker_thread = std::thread(worker_thread_func);
 
+    bool has_server_url_arg = false;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--server-url") == 0) {
+            has_server_url_arg = true;
+            break;
+        }
+    }
+
+    if (!has_server_url_arg) {
+        if (!spawn_server()) {
+            abort_requested.store(true);
+            transcription_queue.push(queue_item{});
+            state.worker_thread.join();
+            if (g_server_reader_thread.joinable()) {
+                g_server_reader_thread.join();
+            }
+            screen_cleanup();
+            XCloseDisplay(dpy);
+            return 1;
+        }
+    }
+
     while (1) {
         XEvent ev;
         XNextEvent(dpy, &ev);
@@ -363,6 +486,7 @@ int main(int argc, char* argv[]) {
     transcription_queue.push(queue_item{});
     state.worker_thread.join();
 
+    stop_server();
     screen_cleanup();
     XCloseDisplay(dpy);
     return 0;

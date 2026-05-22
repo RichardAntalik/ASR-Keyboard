@@ -47,7 +47,7 @@ static long execute_curl_request(const char* json, std::atomic<bool>& abort_requ
 
     struct curl_slist* h = curl_slist_append(NULL, "Content-Type: application/json");
 
-    curl_easy_setopt(curl, CURLOPT_URL, SERVER_URL);
+    curl_easy_setopt(curl, CURLOPT_URL, g_server_url);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);

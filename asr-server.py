@@ -1,4 +1,31 @@
 #!/usr/bin/env python3
+import os
+import sys
+
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_venv_paths = [
+    os.path.join(_script_dir, 'venv', 'lib'),
+    os.path.join(_script_dir, '..', 'venv', 'lib'),
+]
+for _venv_lib in _venv_paths:
+    _venv_lib = os.path.normpath(_venv_lib)
+    if os.path.isdir(_venv_lib):
+        for entry in os.listdir(_venv_lib):
+            if entry.startswith('python') and os.path.isdir(os.path.join(_venv_lib, entry, 'site-packages')):
+                sys.path.insert(0, os.path.join(_venv_lib, entry, 'site-packages'))
+                break
+        break
+
+sys.stdout.reconfigure(line_buffering=True)
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+import logging
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("torch").setLevel(logging.ERROR)
+
 from typing import Union
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -12,8 +39,11 @@ import base64
 
 parser = argparse.ArgumentParser(description="ASR server")
 parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu", help="Compute device")
-parser.add_argument("--debug", action="store_true", help="Enable debug timing")
+parser.add_argument("--debug", action="store_true", help="Enable debug output and progress bars")
 args = parser.parse_args()
+
+if not args.debug:
+    os.environ["TQDM_DISABLE"] = "1"
 
 app = FastAPI()
 
@@ -25,6 +55,8 @@ print(f"Loading {model_id} on {device}...")
 try:
     processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
 except (ValueError, OSError):
+    if args.debug:
+        print("Downloading processor...")
     processor = AutoProcessor.from_pretrained(model_id)
 
 tokenizer = processor.tokenizer
@@ -37,6 +69,8 @@ try:
         local_files_only=True
     ).to(device)
 except (ValueError, OSError):
+    if args.debug:
+        print("Downloading model...")
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
         model_id,
         dtype=torch.bfloat16 if device == "cuda" else torch.float32,

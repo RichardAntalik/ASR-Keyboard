@@ -19,6 +19,44 @@ inline constexpr char SEP_CHAR = '_';
 
 static int shortcut_count = 0;
 static std::deque<std::string> output_buf;
+static std::deque<std::string> server_buf;
+
+static int left_width = 0;
+static int right_width = 0;
+static int separator_x = 0;
+static int right_start_x = 0;
+static int output_start_line = 0;
+
+static void calc_layout() {
+    int term_width = getmaxx(stdscr);
+    left_width = term_width / 2;
+    right_width = term_width - left_width - 1;
+    separator_x = left_width;
+    right_start_x = left_width + 1;
+    output_start_line = shortcut_count + 4;
+}
+
+static void clear_left_line(int y) {
+    for (int x = 0; x < left_width; x++) {
+        mvaddch(y, x, ' ');
+    }
+}
+
+static void clear_right_line(int y) {
+    int term_width = getmaxx(stdscr);
+    for (int x = right_start_x; x < term_width; x++) {
+        mvaddch(y, x, ' ');
+    }
+}
+
+static void draw_vertical_separator() {
+    for (int y = output_start_line; y < LINES; y++) {
+        mvaddch(y, separator_x, '|');
+    }
+}
+
+static void output_render();
+void screen_draw_server_output();
 
 static void output_shift_down(const char* new_line) {
     output_buf.push_front(new_line);
@@ -28,21 +66,25 @@ static void output_shift_down(const char* new_line) {
 }
 
 static void output_render() {
-    int start_line = shortcut_count + 4;
-    int total_lines = LINES - start_line;
+    int total_lines = LINES - output_start_line;
     if (total_lines < 0) total_lines = 0;
     int render_count = output_buf.size();
     if (render_count > total_lines) render_count = total_lines;
     auto it = output_buf.begin();
     for (int i = 0; i < render_count; i++) {
-        move(start_line + i, 0);
-        clrtoeol();
-        printw("%s", it->c_str());
+        clear_left_line(output_start_line + i);
+        move(output_start_line + i, 0);
+        int line_len = static_cast<int>(it->length());
+        if (line_len > left_width) {
+            std::string truncated = it->substr(0, left_width);
+            printw("%s", truncated.c_str());
+        } else {
+            printw("%s", it->c_str());
+        }
         it++;
     }
     for (int i = render_count; i < total_lines; i++) {
-        move(start_line + i, 0);
-        clrtoeol();
+        clear_left_line(output_start_line + i);
     }
 }
 
@@ -125,6 +167,7 @@ void screen_draw_shortcuts(const config* cfg) {
     shortcut_count = static_cast<int>(cfg->entries.size());
     if (shortcut_count > SHORTCUT_LINES) shortcut_count = SHORTCUT_LINES;
 
+    calc_layout();
     int term_width = getmaxx(stdscr);
     int max_line_width = term_width - 4;
 
@@ -152,6 +195,7 @@ void screen_draw_shortcuts(const config* cfg) {
 
     draw_separator(shortcut_count);
     output_render();
+    screen_draw_server_output();
     refresh();
 }
 
@@ -188,8 +232,9 @@ void screen_draw_vu_meter(float volume) {
     buf[strlen(buf) + 1] = '\0';
 
     printw("%s", buf);
-    move(vu_line + 1, 0);
-    clrtoeol();
+    for (int x = strlen(buf); x < term_width; x++) {
+        mvaddch(vu_line + 1, x, ' ');
+    }
     refresh();
 }
 
@@ -202,7 +247,9 @@ void screen_print(int line, const char* fmt, ...) {
     va_end(args);
 
     output_shift_down(buf);
+    calc_layout();
     output_render();
+    screen_draw_server_output();
     refresh();
 }
 
@@ -216,7 +263,9 @@ void screen_debug(const char* fmt, ...) {
 
     std::lock_guard<std::mutex> lock(screen_mutex);
     output_shift_down(buf);
+    calc_layout();
     output_render();
+    screen_draw_server_output();
     refresh();
 }
 
@@ -228,7 +277,46 @@ void screen_handle_resize(const config* cfg) {
     endwin();
     resize_term(0, 0);
     refresh();
+    calc_layout();
+    draw_vertical_separator();
     screen_draw_shortcuts(cfg);
     screen_draw_vu_meter(0.0f);
+    screen_draw_server_output();
+    refresh();
+}
+
+void screen_draw_server_output() {
+    int total_lines = LINES - output_start_line;
+    if (total_lines < 0) total_lines = 0;
+    int render_count = server_buf.size();
+    if (render_count > total_lines) render_count = total_lines;
+    auto it = server_buf.begin();
+    for (int i = 0; i < render_count; i++) {
+        clear_right_line(output_start_line + i);
+        move(output_start_line + i, right_start_x);
+        int line_len = static_cast<int>(it->length());
+        if (line_len > right_width) {
+            std::string truncated = it->substr(0, right_width);
+            printw("%s", truncated.c_str());
+        } else {
+            printw("%s", it->c_str());
+        }
+        it++;
+    }
+    for (int i = render_count; i < total_lines; i++) {
+        clear_right_line(output_start_line + i);
+    }
+}
+
+void screen_push_server_output(const char* line) {
+    std::lock_guard<std::mutex> lock(screen_mutex);
+    server_buf.push_front(line);
+    while ((int)server_buf.size() > LINES) {
+        server_buf.pop_back();
+    }
+    calc_layout();
+    draw_vertical_separator();
+    output_render();
+    screen_draw_server_output();
     refresh();
 }
