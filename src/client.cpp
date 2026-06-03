@@ -1,6 +1,7 @@
 #include "client.h"
 
 #include <curl/curl.h>
+#include <thread>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,7 +95,12 @@ static void process_response(long http_code, char* resp, Window target_window, c
                 if (!cancelled) {
                     Window response_window = static_cast<Window>(json_resp.value("target_window", static_cast<long>(target_window)));
                     if (debug_enabled) screen_debug("typing to window 0x%lx", static_cast<unsigned long>(response_window));
-                    type_text(transcript.c_str(), special_keys, response_window, abort_requested, request_id);
+                    std::string t(transcript);
+                    std::vector<std::string> s(special_keys);
+                    std::atomic<bool>* a = &abort_requested;
+                    std::thread([t, s, response_window, a, request_id]() {
+                        type_text(t.c_str(), s, response_window, *a, request_id);
+                    }).detach();
                 } else {
                     if (debug_enabled) screen_debug("request %d cancelled, skipping typing", request_id);
                 }

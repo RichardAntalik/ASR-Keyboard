@@ -21,6 +21,7 @@ struct config {
 KeySym config_key_to_keysym(const char* name);
 void simulate_key(Display* dpy, const char* keysym_name, bool shift);
 Window get_active_window(Display* dpy);
+void wait_for_keys_released();
 void type_text(const char* text, const std::vector<std::string>& special_keys, Window target_window, std::atomic<bool>& abort_requested, int request_id = 0);
 
 #endif

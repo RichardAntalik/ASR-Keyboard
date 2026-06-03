@@ -48,9 +48,10 @@ void simulate_key(Display* dpy, const char* keysym_name, bool shift) {
     XTestFakeKeyEvent(dpy, code, True, 0);
     XTestFakeKeyEvent(dpy, code, False, 0);
     if (shift) XTestFakeKeyEvent(dpy, XKeysymToKeycode(dpy, XK_Shift_L), False, 0);
+    XFlush(dpy);
 }
 
-static void wait_for_keys_released() {
+void wait_for_keys_released() {
     while (held_key_count.load(std::memory_order_relaxed) > 0) {
         struct timespec ts = {0, 10000000L};
         nanosleep(&ts, NULL);
@@ -137,9 +138,12 @@ static void type_characters(Display* dpy, const char* text, std::atomic<bool>& a
             if (debug_enabled) screen_debug("type_text request %d cancelled", request_id);
             break;
         }
-        if (held_key_count.load() > 0) break;
+        if (held_key_count.load() > 0) {
+            wait_for_keys_released();
+            continue;
+        }
         type_char(dpy, *p);
-        struct timespec ts = {0, 5000000L};
+        struct timespec ts = {0, 15000000L};
         nanosleep(&ts, NULL);
     }
 }
@@ -150,7 +154,10 @@ static void type_special_keys(Display* dpy, const std::vector<std::string>& spec
     for (const auto& key : special_keys) {
         if (abort_requested.load()) break;
         if (request_id > 0 && g_request_storage.is_cancelled(request_id)) break;
-        if (held_key_count.load() > 0) break;
+        if (held_key_count.load() > 0) {
+            wait_for_keys_released();
+            continue;
+        }
 
         if (key == "enter" || key == "Return") {
             simulate_key(dpy, "Return", false);
@@ -161,7 +168,7 @@ static void type_special_keys(Display* dpy, const std::vector<std::string>& spec
         } else {
             simulate_key(dpy, key.c_str(), false);
         }
-        struct timespec ts = {0, 5000000L};
+        struct timespec ts = {0, 15000000L};
         nanosleep(&ts, NULL);
     }
 }

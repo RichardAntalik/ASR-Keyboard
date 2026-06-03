@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <thread>
 #include <mutex>
@@ -242,6 +243,7 @@ static void stop_server() {
 }
 
 static void worker_thread_func() {
+    auto last_transcription = std::chrono::steady_clock::now();
     while (true) {
         queue_item item = transcription_queue.pop();
         if (item.buffer.empty()) break;
@@ -252,7 +254,16 @@ static void worker_thread_func() {
             continue;
         }
 
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_transcription).count();
+        if (elapsed < 1000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000 - elapsed));
+        }
+        last_transcription = std::chrono::steady_clock::now();
+
         if (debug_enabled) screen_debug("worker processing request %d, %zu samples", item.request_id, item.buffer.size());
+        wait_for_keys_released();
+        if (abort_requested.load()) break;
         send_to_server(item.buffer.data(), item.buffer.size(), item.special_keys, item.prompt.c_str(), item.target_window, abort_requested, item.request_id);
 
         g_request_storage.remove(item.request_id);
@@ -392,7 +403,8 @@ static void process_xi_event(app_state* state, Display* dpy, XGenericEventCookie
         handle_key_press(state, raw);
     } else if (cookie->evtype == XI_RawKeyRelease) {
         if (keycode < 512) state->keycode_state[keycode] = false;
-        held_key_count.fetch_sub(1, std::memory_order_relaxed);
+        int old = held_key_count.load(std::memory_order_relaxed);
+        while (old > 0 && !held_key_count.compare_exchange_weak(old, old - 1, std::memory_order_relaxed, std::memory_order_relaxed));
 
         if (recording_active.load() && state->active_entry != -1) {
             if (is_active_key_released(state, keycode)) {
