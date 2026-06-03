@@ -2,6 +2,7 @@
 
 #include <curl/curl.h>
 #include <thread>
+#include <mutex>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,6 +100,8 @@ static void process_response(long http_code, char* resp, Window target_window, c
                     std::vector<std::string> s(special_keys);
                     std::atomic<bool>* a = &abort_requested;
                     std::thread([t, s, response_window, a, request_id]() {
+                        static std::mutex typing_mutex;
+                        std::lock_guard<std::mutex> lock(typing_mutex);
                         type_text(t.c_str(), s, response_window, *a, request_id);
                     }).detach();
                 } else {
