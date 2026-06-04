@@ -1,6 +1,6 @@
 # asr-kb
 
-Hold a configured hotkey combination to record audio from your microphone, release it to transcribe the speech, and the tool types the transcript directly into your active window.
+Hold a configured hotkey combination to record audio from your microphone, release it to transcribe the speech, and the tool types the transcript directly into the window.
 
 ## Installation
 
