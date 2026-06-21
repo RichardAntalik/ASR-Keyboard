@@ -128,8 +128,9 @@ static void type_char(Display* dpy, char c) {
     }
 }
 
-static void type_characters(Display* dpy, const char* text, std::atomic<bool>& abort_requested, int request_id) {
-    for (const char* p = text; *p; p++) {
+static void type_characters(Display* dpy, const char* text, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
+    const char* p = text;
+    while (*p) {
         if (abort_requested.load()) {
             if (debug_enabled) screen_debug("type_text aborted during character loop");
             break;
@@ -142,23 +143,33 @@ static void type_characters(Display* dpy, const char* text, std::atomic<bool>& a
             wait_for_keys_released();
             continue;
         }
+        if (target_window != None) {
+            XSetInputFocus(dpy, target_window, RevertToParent, CurrentTime);
+            XFlush(dpy);
+        }
         type_char(dpy, *p);
-        struct timespec ts = {0, 15000000L};
+        p++;
+        struct timespec ts = {0, 5000000L};
         nanosleep(&ts, NULL);
     }
 }
 
-static void type_special_keys(Display* dpy, const std::vector<std::string>& special_keys, std::atomic<bool>& abort_requested, int request_id) {
+static void type_special_keys(Display* dpy, const std::vector<std::string>& special_keys, Window target_window, std::atomic<bool>& abort_requested, int request_id) {
     if (debug_enabled) screen_debug("type_text special_keys count=%zu", special_keys.size());
 
-    for (const auto& key : special_keys) {
+    for (size_t i = 0; i < special_keys.size(); i++) {
         if (abort_requested.load()) break;
         if (request_id > 0 && g_request_storage.is_cancelled(request_id)) break;
         if (held_key_count.load() > 0) {
             wait_for_keys_released();
             continue;
         }
+        if (target_window != None) {
+            XSetInputFocus(dpy, target_window, RevertToParent, CurrentTime);
+            XFlush(dpy);
+        }
 
+        const auto& key = special_keys[i];
         if (key == "enter" || key == "Return") {
             simulate_key(dpy, "Return", false);
         } else if (key == "space" || key == " ") {
@@ -168,7 +179,7 @@ static void type_special_keys(Display* dpy, const std::vector<std::string>& spec
         } else {
             simulate_key(dpy, key.c_str(), false);
         }
-        struct timespec ts = {0, 15000000L};
+        struct timespec ts = {0, 5000000L};
         nanosleep(&ts, NULL);
     }
 }
@@ -196,14 +207,14 @@ void type_text(const char* text, const std::vector<std::string>& special_keys, W
     Display* dpy = open_display_and_focus(text, target_window, &prev_focus);
     if (!dpy) return;
 
-    type_characters(dpy, text, abort_requested, request_id);
+    type_characters(dpy, text, target_window, abort_requested, request_id);
 
     if (abort_requested.load()) {
         if (debug_enabled) screen_debug("type_text aborted before special keys");
     } else if (request_id > 0 && g_request_storage.is_cancelled(request_id)) {
         if (debug_enabled) screen_debug("type_text request %d cancelled before special keys", request_id);
     } else {
-        type_special_keys(dpy, special_keys, abort_requested, request_id);
+        type_special_keys(dpy, special_keys, target_window, abort_requested, request_id);
     }
 
     cleanup_type_text(dpy, target_window, prev_focus);
